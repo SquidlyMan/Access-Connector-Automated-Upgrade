@@ -33,7 +33,7 @@ Connectors inside a tenant are done one at a time. A tenant with two or more con
 | Item | Detail |
 |---|---|
 | Admin machine | macOS, Linux or Windows with PowerShell 7 or later (`pwsh`). The tool will not start under Windows PowerShell 5.1. WinRM mode needs a Windows admin machine. The connector servers themselves need only the Windows PowerShell 5.1 that Windows Server includes, over WinRM or SSH. If you use a connector server as the admin machine, install PowerShell 7 on it as well. |
-| Reach to the connectors | SSH with key sign-in (port 22), or PowerShell remoting (WinRM, ports 5985/5986) |
+| Reach to the connectors | SSH with key sign-in (port 22), or PowerShell remoting (WinRM, ports 5985/5986). With WinRM, SSH is not needed for upgrades and clean installs. `-Mode Verify`, `-Mode Stage` and the two repair modes always use SSH. |
 | Connector installer | The Omnissa Access Connector installer `.exe` for the version you want |
 | Tenant configuration file | The `es-config.json` from the Access console, and its password |
 | Service account | Needed when a connector runs Kerberos Auth or Virtual App: the account name and its password |
@@ -156,7 +156,7 @@ The commands in this guide assume you have done this. If you have not, add `-Ssh
 
 ## 5. Or use WinRM (PowerShell remoting)
 
-Use this route from a Windows admin machine when SSH is not an option.
+Use this route from a Windows admin machine when SSH is not an option. Upgrades and clean installs over WinRM need no SSH at all: no OpenSSH Server on the connectors, no SSH client or key on the admin machine. Section 4 can be skipped. Only `-Mode Verify`, `-Mode Stage`, `-Mode RepairKeytab` and `-Mode RepairCertificate` need SSH.
 
 1. Install PowerShell 7 on the admin machine.
 2. Sign in to the admin machine with, or be ready to type, a domain account that is an administrator on the connectors.
