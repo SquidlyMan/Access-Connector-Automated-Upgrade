@@ -38,7 +38,7 @@ With neither `-FleetConfig` nor `-Fleet`, the first of these that exists beside 
 
 | Parameter | Meaning |
 |---|---|
-| `-DryRun` | Copy the payload and run the pre-flight checks only. Nothing is installed. With `RepairKeytab`: test the sign-in only. With `RepairCertificate`: test the PFX and password only. |
+| `-DryRun` | Copy the payload and run the pre-flight checks only. Nothing is installed. The checks always run, also on a connector that a real run would skip (already on the installer's version) or refuse (newer than the installer); the result then says so. With `RepairKeytab`: test the sign-in only. With `RepairCertificate`: test the PFX and password only. |
 | `-ForceReinstall` | Connector already on the installer's version: uninstall it, then install fresh. Without this, a same-version connector is skipped. |
 | `-Reapply` | `RepairCertificate` only: install the PFX certificate even when the connector already serves it, or when the certificate does not name the connector. |
 | `-SkipJavaPatch` | Do not run the Java4Shell patch even when the fleet file names its folder. |
@@ -89,8 +89,8 @@ When a switch has no effect in the chosen mode, the tool says so before it start
 | Status | Meaning |
 |---|---|
 | `Success` | Installed (or repaired) and every check passed |
-| `DryRunPassed` | Pre-flight checks passed; nothing was installed |
-| `DryRunFailed` | A pre-flight check failed; nothing was installed |
+| `DryRunPassed` | Pre-flight checks passed; nothing was installed. A message under it says when a real run would skip the connector. |
+| `DryRunFailed` | A pre-flight check failed, or a real run would refuse the connector (installed version newer than the installer); nothing was installed |
 | `Blocked` | Refused before any change; the message gives the reason |
 | `Failed` | The installer returned a failure code |
 | `Unhealthy` | The install finished but a check afterwards did not pass |

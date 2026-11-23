@@ -143,6 +143,6 @@ In the test environment two unrelated domains each had their own copy of the sta
 
 ## Dry runs and tests
 
-- A dry run really copies files and really runs the pre-flight checks on the connector. It is the right way to prove passwords before a change window.
+- A dry run really copies files and really runs the pre-flight checks on the connector. It is the right way to prove passwords before a change window. Until 1.4.1 it did not, on a connector already on the installer's version: the wrapper's same-version skip came before its checks, so `DryRunPassed` there proved nothing about the passwords. Since 1.4.1 the checks run first and the skip is reported as a note.
 - `-Mode Verify` copies the helper script to the connector. It is not purely read-only, so do not run it against a connector while another run is using the helper there.
 - For exercising the scheduled-task plumbing without a domain account, setting the environment variable `AC_UPGRADE_RUNAS_SYSTEM` makes a **dry run** use the SYSTEM account for the task. It is a test aid and is refused for real runs.

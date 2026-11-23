@@ -70,6 +70,7 @@ Logs to read, in order:
 | `the task is still running after 120 minutes` | The scheduled task has not finished | It was left running. Check `task-console_*.log` on the connector. |
 | `The fleet entry names the install folder ..., but this connector is installed in ...` (warning) | `InstallDir` differs from where the connector is | An upgrade stays where it is. Correct `InstallDir`, or move it with `-ForceReinstall` |
 | Wrapper audit log: `Served certificate does not match the provided PFX ... Expected after an upgrade` | Normal after an upgrade | The fleet tool puts the PFX back itself. Run by hand: `-Mode RepairCertificate` |
+| Dry run: `note - A real run would SKIP this connector` | The connector is already on the installer's version. The passwords were still checked | Nothing, if no change is wanted. Add `-ForceReinstall` to reinstall |
 | Same-version connector: nothing seems to happen | A connector already on the installer's version is skipped by design | Add `-ForceReinstall` if a reinstall is what you want |
 
 ## Verify shows something wrong

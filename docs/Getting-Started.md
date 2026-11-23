@@ -4,7 +4,22 @@ Access Connector Automated Upgrade installs, upgrades and repairs Omnissa Access
 
 This guide takes you from nothing to a first upgrade in any environment. It covers the two ways the tool can reach a connector (SSH and WinRM), how to stand up SSH on a Windows server, clean installs on new servers, and how to choose which connector services are installed.
 
-> **Unsupported.** This tool is not an Omnissa product and is not covered by Omnissa support. It is provided "as is", with no warranty. Test it in a lab before you use it on production connectors. The full disclaimer is shown by `-Help`.
+<!-- disclaimer -->
+> [!CAUTION]
+> **LEGAL DISCLAIMER - UNSUPPORTED, USE AT YOUR OWN RISK**
+>
+> This script is an UNSUPPORTED utility. It is NOT an Omnissa product or offering, and it is not covered by any Omnissa support, maintenance, or service-level agreement.
+>
+> It is provided "AS IS" and "AS AVAILABLE", WITHOUT WARRANTY OF ANY KIND, express or implied, including but not limited to the implied warranties of merchantability, fitness for a particular purpose, title, and non-infringement.
+>
+> YOU USE IT ENTIRELY AT YOUR OWN RISK. You are solely responsible for validating its behaviour, for safeguarding the credentials you supply to it, and for any effect it has on your environment or data.
+>
+> TO THE MAXIMUM EXTENT PERMITTED BY LAW, NEITHER OMNISSA NOR THE AUTHOR SHALL BE LIABLE FOR ANY CLAIM, LOSS, OR DAMAGES WHATSOEVER - direct, indirect, incidental, special, exemplary, or consequential (including loss of data, revenue, or profits) - arising from or in connection with the use of, or inability to use, this script.
+>
+> Use of the Omnissa products is governed by your agreement with Omnissa; customers assume all responsibility for automated changes to them.
+<!-- /disclaimer -->
+
+Test the tool in a lab before you use it on production connectors. Each script also shows this disclaimer with `-Help`.
 
 ## 1. What the tool does
 
@@ -32,8 +47,8 @@ Connectors inside a tenant are done one at a time. A tenant with two or more con
 
 | Item | Detail |
 |---|---|
-| Admin machine | macOS, Linux or Windows with PowerShell 7 or later (`pwsh`). The tool will not start under Windows PowerShell 5.1. WinRM mode needs Windows. |
-| Reach to the connectors | SSH with key sign-in (port 22), or PowerShell remoting (WinRM, ports 5985/5986) |
+| Admin machine | macOS, Linux or Windows with PowerShell 7 or later (`pwsh`). The tool will not start under Windows PowerShell 5.1. WinRM mode needs a Windows admin machine. The connector servers themselves need only the Windows PowerShell 5.1 that Windows Server includes, over WinRM or SSH. If you use a connector server as the admin machine, install PowerShell 7 on it as well. |
+| Reach to the connectors | SSH with key sign-in (port 22), or PowerShell remoting (WinRM, ports 5985/5986). With WinRM, SSH is not needed for upgrades and clean installs. `-Mode Verify`, `-Mode Stage` and the two repair modes always use SSH. |
 | Connector installer | The Omnissa Access Connector installer `.exe` for the version you want |
 | Tenant configuration file | The `es-config.json` from the Access console, and its password |
 | Service account | Needed when a connector runs Kerberos Auth or Virtual App: the account name and its password |
@@ -58,7 +73,38 @@ The connectors themselves need only what the Omnissa installer needs, plus Windo
 
 ## 4. Stand up SSH on a Windows server
 
-Do this once on each connector. It takes about five minutes. Run the commands in an elevated Windows PowerShell window on the connector.
+### Why SSH, and why a key
+
+SSH is the route that works from any admin machine (macOS, Linux or Windows) and the only one that offers every mode: upgrades, clean installs, `-Mode Verify`, `-Mode Stage` and both repair modes. It also brings each connector's logs back to one folder. OpenSSH Server is part of Windows Server, so nothing from outside Microsoft is installed on the connectors.
+
+The tool signs in to the connectors with an **SSH key**, never with a password. A key pair has two halves:
+
+- The **private key** stays on your admin machine and never leaves it.
+- The **public key** is copied to each connector. It is not secret: it can only check a sign-in, not make one.
+
+When the tool connects, the connector checks that the admin machine holds the private key that matches. Nothing that could be replayed crosses the network, and no password is typed, stored or sent for the SSH sign-in. The passwords the installer needs (configuration file, PFX, service account) are a separate matter; the tool asks for those at hidden prompts each run.
+
+### How it is made secure
+
+| Measure | What it protects against | Where |
+|---|---|---|
+| Key sign-in only, password sign-in turned off | Password guessing against the connector | 4.4, 4.5 |
+| The key file on the connector readable only by Administrators and SYSTEM | Someone adding their own key | 4.4 |
+| A passphrase on the private key | A copied key file being used by someone else | 4.3 |
+| Port 22 open only to your admin machines or management network | Connection attempts from anywhere else | 4.2 |
+| The tool never falls back to a password (`BatchMode`) | A run stopping at a prompt, or a password typed into the wrong place | Built in |
+| Each connector's host key is remembered on first contact and checked on every later one | Another machine answering in the connector's place | Built in; see the note in 4.6 |
+
+### How it is made seamless
+
+- **One key for every connector.** Generate it once (4.3) and authorise the same public key on each connector (4.4).
+- **An SSH agent holds the unlocked key.** You type the passphrase once per session (macOS can keep it in the Keychain), and every connection after that, including the dozens a run makes, signs in without a prompt.
+- **An SSH configuration entry names the key** (4.7), so you do not have to add `-SshKey` to every command.
+- **Many servers at once.** The four steps below are the same on every connector, so they can be pushed with Group Policy, your configuration tool or a one-off remoting loop instead of being typed on each server.
+
+### The steps
+
+Do this once on each connector. It takes about five minutes. Run the commands in an elevated Windows PowerShell window on the connector, except 4.3, 4.6 and 4.7, which run on the admin machine.
 
 ### 4.1 Install and start OpenSSH Server
 
@@ -97,7 +143,21 @@ On the admin machine (not the connector):
 ssh-keygen -t ed25519 -f ~/.ssh/connector_ed25519 -C "access-connector-upgrade"
 ```
 
-Give the key a passphrase and load it into your SSH agent, or leave the passphrase empty and protect the file. The tool never asks for an SSH password: if the key is refused, the run stops. Show the public half with:
+Give the key a passphrase when asked, and load it into your SSH agent so you type the passphrase once rather than on every connection:
+
+```
+# macOS: also keeps the passphrase in the Keychain
+ssh-add --apple-use-keychain ~/.ssh/connector_ed25519
+
+# Linux
+ssh-add ~/.ssh/connector_ed25519
+
+# Windows (elevated PowerShell, once): start the agent, then add the key
+Set-Service ssh-agent -StartupType Automatic; Start-Service ssh-agent
+ssh-add $HOME\.ssh\connector_ed25519
+```
+
+A key without a passphrase also works, but then the file itself is the only protection: anyone who can copy it can sign in to every connector. The tool never asks for an SSH password: if the key is refused, the run stops. Show the public half with:
 
 ```
 cat ~/.ssh/connector_ed25519.pub
@@ -139,6 +199,14 @@ ssh -i ~/.ssh/connector_ed25519 administrator@connector1.example.local hostname
 
 You should see the server name with no password prompt. If you are asked for a password, the key was not accepted: recheck step 4.4, especially the `icacls` line.
 
+**The host key.** The first time you connect, SSH shows the connector's host key fingerprint and asks whether to trust it. To be sure you are talking to the real server, compare it with the fingerprint shown on the connector itself:
+
+```
+ssh-keygen -lf C:\ProgramData\ssh\ssh_host_ed25519_key.pub
+```
+
+Answer `yes` only when they match. SSH then remembers the key and refuses the server if it ever changes. The tool accepts a host it has never seen without asking, so connecting once by hand like this before the first run is how every host key gets checked.
+
 ### 4.7 Tell SSH which key to use (optional)
 
 To save typing `-SshKey` on every command, add the key to the SSH configuration file on the admin machine (`~/.ssh/config`; on Windows `%USERPROFILE%\.ssh\config`):
@@ -156,7 +224,7 @@ The commands in this guide assume you have done this. If you have not, add `-Ssh
 
 ## 5. Or use WinRM (PowerShell remoting)
 
-Use this route from a Windows admin machine when SSH is not an option.
+Use this route from a Windows admin machine when SSH is not an option. Upgrades and clean installs over WinRM need no SSH at all: no OpenSSH Server on the connectors, no SSH client or key on the admin machine. Section 4 can be skipped. Only `-Mode Verify`, `-Mode Stage`, `-Mode RepairKeytab` and `-Mode RepairCertificate` need SSH.
 
 1. Install PowerShell 7 on the admin machine.
 2. Sign in to the admin machine with, or be ready to type, a domain account that is an administrator on the connectors.
@@ -170,11 +238,25 @@ If that fails, run `Enable-PSRemoting -Force` in an elevated PowerShell window o
 
 Then add `-Mode WinRM` to the upgrade commands in this guide. The tool asks for the domain sign-in once per tenant.
 
-What to know about WinRM mode:
+### 5.1 What you cannot do without SSH
 
-- Upgrades and clean installs work. `-Mode Verify`, `-Mode RepairKeytab` and `-Mode RepairCertificate` always use SSH.
-- Each connector's logs stay on the connector in `C:\ProgramData\AccessConnectorUpdate\Logs`. They are not copied back.
-- Kerberos Auth connectors are upgraded through a one-time scheduled task under the sign-in you give, or directly with `-Authentication CredSSP` if you have CredSSP set up. Neither has been proven in testing yet; WinRM mode has been proven on connectors without Kerberos Auth.
+When the connectors have no SSH, these parts of the tool are **not available**:
+
+| Not available without SSH | What it would have done | What you can do instead |
+|---|---|---|
+| `-Mode Verify` | Report every connector's version, services, patch flag, keytab and certificate from the admin machine, changing nothing | Read the result of each WinRM run (it ends with the same state line). On a connector, `Invoke-ConnectorUpgradeLocal.ps1 -VerifyOnly` in the staging folder prints the same report. |
+| `-Mode RepairKeytab` | Rebuild an empty Kerberos keytab, run as a domain admin through a scheduled task | Run the helper on the connector with `-RepairKeytab`, signed in there as a domain admin |
+| `-Mode RepairCertificate` | Put the PFX certificate back on the Kerberos Auth service | Run the helper on the connector with `-RepairCertificate -Prompt -CertFile <pfx>` |
+| `-Mode Stage` | Copy everything to the connectors and write `Run-Upgrade.cmd`, for an upgrade you start or schedule on the server later (`-Schedule`) | Run the upgrade over WinRM at the time you want, or copy the files yourself |
+| Logs copied back | Each connector's logs collected in `FleetDeploy\FleetLogs` beside the summary | The logs stay on each connector in `C:\ProgramData\AccessConnectorUpdate\Logs` |
+
+The "instead" routes need a sign-in on the connector itself, which this tool exists to avoid, and they have not been tested from a remoting session. If you need the report and repair modes, open SSH on at least the connectors that run Kerberos Auth; the two routes can be mixed.
+
+Everything else works over WinRM: upgrades, clean installs, `-ForceReinstall` (including changing the services), `-DryRun`, one connector at a time with the health gate, `-ParallelTenants` and `-Parallel`, the summary on screen and in the CSV, the keytab check and the certificate step at the end of a Kerberos Auth upgrade, and the cleaning of the installer's log on the connector.
+
+### 5.2 Kerberos Auth connectors over WinRM
+
+Kerberos Auth connectors are upgraded through a one-time scheduled task under the sign-in you give, or directly with `-Authentication CredSSP` if you have CredSSP set up. Neither has been proven in testing yet; WinRM mode has been proven on connectors without Kerberos Auth.
 
 ## 6. Build the staging folder
 
@@ -258,6 +340,8 @@ Each connector gets one line: installed version, services running, and for Kerbe
 ```
 
 This copies the files and runs every pre-flight check: the PFX opens with the password you typed, the configuration file is valid, the service account password works, the domain admin account can start the task. Nothing is installed. Fix anything it reports and repeat until it says `DryRunPassed`.
+
+The checks run on every connector, also one that is already on the installer's version. A real run would skip such a connector, and the dry run says so in a note: "A real run would SKIP this connector". Add `-ForceReinstall` if you want it reinstalled.
 
 ### 8.3 The real run
 
@@ -474,3 +558,18 @@ More cases are in `docs/Troubleshooting.md`.
 | `docs/Engineering-Notes.md` | What was learned about the vendor installer |
 | `docs/Validation-Record.md` | What has been proven in testing, and what has not |
 | `CHANGELOG.md`, `ROADMAP.md` | History and what is planned |
+
+<!-- disclaimer -->
+> [!CAUTION]
+> **LEGAL DISCLAIMER - UNSUPPORTED, USE AT YOUR OWN RISK**
+>
+> This script is an UNSUPPORTED utility. It is NOT an Omnissa product or offering, and it is not covered by any Omnissa support, maintenance, or service-level agreement.
+>
+> It is provided "AS IS" and "AS AVAILABLE", WITHOUT WARRANTY OF ANY KIND, express or implied, including but not limited to the implied warranties of merchantability, fitness for a particular purpose, title, and non-infringement.
+>
+> YOU USE IT ENTIRELY AT YOUR OWN RISK. You are solely responsible for validating its behaviour, for safeguarding the credentials you supply to it, and for any effect it has on your environment or data.
+>
+> TO THE MAXIMUM EXTENT PERMITTED BY LAW, NEITHER OMNISSA NOR THE AUTHOR SHALL BE LIABLE FOR ANY CLAIM, LOSS, OR DAMAGES WHATSOEVER - direct, indirect, incidental, special, exemplary, or consequential (including loss of data, revenue, or profits) - arising from or in connection with the use of, or inability to use, this script.
+>
+> Use of the Omnissa products is governed by your agreement with Omnissa; customers assume all responsibility for automated changes to them.
+<!-- /disclaimer -->
