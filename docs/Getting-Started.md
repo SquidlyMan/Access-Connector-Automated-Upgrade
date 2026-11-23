@@ -39,6 +39,8 @@ Connectors inside a tenant are done one at a time. A tenant with two or more con
 | Same-version clean reinstall | Add `-ForceReinstall` (uninstalls, then installs fresh) |
 | Choose the services | `Services` in the fleet file, per connector or group of connectors |
 | See the state, change nothing | `-Mode Verify` |
+| Write the fleet file from a spreadsheet | `-ImportFleet <file>` (section 7.1) |
+| Read installed connectors into a spreadsheet | `-Mode Discover` (section 7.2) |
 | Rehearse without installing | `-DryRun` |
 | Fix an empty Kerberos keytab | `-Mode RepairKeytab` |
 | Fix the Kerberos certificate | `-Mode RepairCertificate` |
@@ -48,7 +50,7 @@ Connectors inside a tenant are done one at a time. A tenant with two or more con
 | Item | Detail |
 |---|---|
 | Admin machine | macOS, Linux or Windows with PowerShell 7 or later (`pwsh`). The tool will not start under Windows PowerShell 5.1. WinRM mode needs a Windows admin machine. The connector servers themselves need only the Windows PowerShell 5.1 that Windows Server includes, over WinRM or SSH. If you use a connector server as the admin machine, install PowerShell 7 on it as well. |
-| Reach to the connectors | SSH with key sign-in (port 22), or PowerShell remoting (WinRM, ports 5985/5986). With WinRM, SSH is not needed for upgrades and clean installs. `-Mode Verify`, `-Mode Stage` and the two repair modes always use SSH. |
+| Reach to the connectors | SSH with key sign-in (port 22), or PowerShell remoting (WinRM, ports 5985/5986). With WinRM, SSH is not needed for upgrades and clean installs. `-Mode Verify`, `-Mode Discover`, `-Mode Stage` and the two repair modes always use SSH. |
 | Connector installer | The Omnissa Access Connector installer `.exe` for the version you want |
 | Tenant configuration file | The `es-config.json` from the Access console, and its password |
 | Service account | Needed when a connector runs Kerberos Auth or Virtual App: the account name and its password |
@@ -65,17 +67,17 @@ The connectors themselves need only what the Omnissa installer needs, plus Windo
 | Admin machine | macOS, Linux or Windows | Windows only | macOS, Linux or Windows |
 | Sign-in | SSH key | Domain credential, asked per tenant | SSH key to copy; you run it on the connector |
 | Upgrade and clean install | Yes | Yes | Yes, by hand or scheduled on the connector |
-| Verify, RepairKeytab, RepairCertificate | Yes | No, these use SSH | No |
+| Verify, Discover, RepairKeytab, RepairCertificate | Yes | No, these use SSH | No |
 | Logs copied back to one folder | Yes | No, they stay on the connector | No |
 | Set-up work | Enable OpenSSH Server on each connector | Usually none on domain-joined servers | Same as SSH |
 
-**Recommendation:** use SSH if you can. Every mode works over it, and it is the route with the most testing. Use WinRM when policy does not allow SSH on the servers; you can still upgrade and clean install, but you lose the report and repair modes. You can mix the two: WinRM for upgrades and SSH on a few servers for the repair modes.
+**Recommendation:** use SSH if you can. Every mode works over it, and it is the route with the most testing. Use WinRM when policy does not allow SSH on the servers; you can still upgrade and clean install, but you lose the report, discovery and repair modes. You can mix the two: WinRM for upgrades and SSH on a few servers for the repair modes.
 
 ## 4. Stand up SSH on a Windows server
 
 ### Why SSH, and why a key
 
-SSH is the route that works from any admin machine (macOS, Linux or Windows) and the only one that offers every mode: upgrades, clean installs, `-Mode Verify`, `-Mode Stage` and both repair modes. It also brings each connector's logs back to one folder. OpenSSH Server is part of Windows Server, so nothing from outside Microsoft is installed on the connectors.
+SSH is the route that works from any admin machine (macOS, Linux or Windows) and the only one that offers every mode: upgrades, clean installs, `-Mode Verify`, `-Mode Discover`, `-Mode Stage` and both repair modes. It also brings each connector's logs back to one folder. OpenSSH Server is part of Windows Server, so nothing from outside Microsoft is installed on the connectors.
 
 The tool signs in to the connectors with an **SSH key**, never with a password. A key pair has two halves:
 
@@ -224,7 +226,7 @@ The commands in this guide assume you have done this. If you have not, add `-Ssh
 
 ## 5. Or use WinRM (PowerShell remoting)
 
-Use this route from a Windows admin machine when SSH is not an option. Upgrades and clean installs over WinRM need no SSH at all: no OpenSSH Server on the connectors, no SSH client or key on the admin machine. Section 4 can be skipped. Only `-Mode Verify`, `-Mode Stage`, `-Mode RepairKeytab` and `-Mode RepairCertificate` need SSH.
+Use this route from a Windows admin machine when SSH is not an option. Upgrades and clean installs over WinRM need no SSH at all: no OpenSSH Server on the connectors, no SSH client or key on the admin machine. Section 4 can be skipped. Only `-Mode Verify`, `-Mode Discover`, `-Mode Stage`, `-Mode RepairKeytab` and `-Mode RepairCertificate` need SSH.
 
 1. Install PowerShell 7 on the admin machine.
 2. Sign in to the admin machine with, or be ready to type, a domain account that is an administrator on the connectors.
@@ -245,6 +247,7 @@ When the connectors have no SSH, these parts of the tool are **not available**:
 | Not available without SSH | What it would have done | What you can do instead |
 |---|---|---|
 | `-Mode Verify` | Report every connector's version, services, patch flag, keytab and certificate from the admin machine, changing nothing | Read the result of each WinRM run (it ends with the same state line). On a connector, `Invoke-ConnectorUpgradeLocal.ps1 -VerifyOnly` in the staging folder prints the same report. |
+| `-Mode Discover` | Read every connector's current settings into a draft spreadsheet for the fleet file (section 7.2) | Write the spreadsheet or the fleet file by hand (section 7) |
 | `-Mode RepairKeytab` | Rebuild an empty Kerberos keytab, run as a domain admin through a scheduled task | Run the helper on the connector with `-RepairKeytab`, signed in there as a domain admin |
 | `-Mode RepairCertificate` | Put the PFX certificate back on the Kerberos Auth service | Run the helper on the connector with `-RepairCertificate -Prompt -CertFile <pfx>` |
 | `-Mode Stage` | Copy everything to the connectors and write `Run-Upgrade.cmd`, for an upgrade you start or schedule on the server later (`-Schedule`) | Run the upgrade over WinRM at the time you want, or copy the files yourself |
@@ -252,7 +255,7 @@ When the connectors have no SSH, these parts of the tool are **not available**:
 
 The "instead" routes need a sign-in on the connector itself, which this tool exists to avoid, and they have not been tested from a remoting session. If you need the report and repair modes, open SSH on at least the connectors that run Kerberos Auth; the two routes can be mixed.
 
-Everything else works over WinRM: upgrades, clean installs, `-ForceReinstall` (including changing the services), `-DryRun`, one connector at a time with the health gate, `-ParallelTenants` and `-Parallel`, the summary on screen and in the CSV, the keytab check and the certificate step at the end of a Kerberos Auth upgrade, and the cleaning of the installer's log on the connector.
+Everything else works over WinRM: building the fleet file from a spreadsheet (`-ImportFleet` contacts no connector), upgrades, clean installs, `-ForceReinstall` (including changing the services), `-DryRun`, one connector at a time with the health gate, `-ParallelTenants` and `-Parallel`, the summary on screen and in the CSV, the keytab check and the certificate step at the end of a Kerberos Auth upgrade, and the cleaning of the installer's log on the connector.
 
 ### 5.2 Kerberos Auth connectors over WinRM
 
@@ -286,7 +289,9 @@ No passwords go in any file. They are asked for at hidden prompts when you run t
 
 ## 7. Write the fleet file
 
-In `FleetDeploy`, copy `fleet.example.psd1` to `fleet.psd1` and edit it. Each entry describes one connector group: usually all the connectors of a tenant, but see section 11 for giving one connector or a few of them different services.
+You can write the fleet file by hand, as below, or fill in a spreadsheet and let the tool write it (7.1). For connectors that are already installed, the tool can read their settings into that spreadsheet for you (7.2).
+
+To write it by hand: in `FleetDeploy`, copy `fleet.example.psd1` to `fleet.psd1` and edit it. Each entry describes one connector group: usually all the connectors of a tenant, but see section 11 for giving one connector or a few of them different services.
 
 ```
 @{
@@ -320,6 +325,81 @@ In `FleetDeploy`, copy `fleet.example.psd1` to `fleet.psd1` and edit it. Each en
 | `Connectors` | The servers, in the order they are done. |
 
 To move to a different connector version later, put the new installer in `Installers` and change `Installer` (and `ExpectVersionPrefix`). Nothing else in the tool is tied to a version. The full list of settings is in `docs/Fleet-File-Reference.md`.
+
+### 7.1 Or fill in a spreadsheet
+
+If you would rather keep the fleet in Excel, fill in a spreadsheet with one row per connector and let the tool write the fleet file from it. The tool checks the spreadsheet before it writes anything, and contacts no connector while it does this. Excel is not needed on the admin machine.
+
+1. In `FleetDeploy`, copy `fleet.example.xlsx` to `fleet.xlsx`, or another name of your own. Fill in the copy, not the template: the templates are part of the tool's repository. (`fleet.example.csv` holds the same rows as a CSV file, if you prefer one.)
+2. On the `Fleet` sheet, replace the example rows with one row per connector. The `Columns` sheet explains each column.
+3. Save it. In a terminal in the `FleetDeploy` folder, check it. Nothing is written:
+
+```
+pwsh ./Invoke-AccessConnectorUpgrade.ps1 -ImportFleet ./fleet.xlsx -DryRun
+```
+
+4. It shows the groups and connectors it found, and lists any problems. Correct them in the spreadsheet and repeat until it shows none. Then write the fleet file:
+
+```
+pwsh ./Invoke-AccessConnectorUpgrade.ps1 -ImportFleet ./fleet.xlsx
+```
+
+The columns are the fleet file settings above, one row per connector:
+
+| Column | Set for | Meaning |
+|---|---|---|
+| `Group` | Each connector | The connector group it belongs to: the `Name` above. Rows with the same `Group` make one group. |
+| `Host`, `SshUser` | Each connector | As in `Connectors` above |
+| `Installer`, `ConfigFile`, `Services` | The group | Required |
+| `ServiceAccount`, `Pfx` | The group | As above: `ServiceAccount` with Kerberos Auth or Virtual App, `Pfx` with Kerberos Auth |
+| The other settings above | The group | Optional |
+| `Notes` | Each connector | Ignored by the tool; for your own notes |
+
+Things to know:
+
+- **Group settings once per group.** Fill them in on the group's first row. Its other rows can leave them blank or repeat them; a different value on a later row is a problem.
+- **Several services in one cell.** Separate them with commas, or put one per line (Alt+Enter). A line break in any other cell is a problem.
+- **The first sheet is read.** The import reads the first sheet that is not hidden, so keep `Fleet` first. The check names the sheet it read.
+- **No passwords.** A column that looks as if it holds passwords is refused. Passwords are asked at run time, as always.
+- **Versions in Excel.** Excel turns `26.10` typed into an ordinary cell into `26.1`. The template's `Fleet` sheet is formatted as Text, so this does not happen there. Keep working in the `.xlsx` file: a CSV file loses that format when Excel opens it. The import warns when a version looks damaged.
+- **Where the fleet file goes.** It is written as `fleet.psd1` beside the script, as `fleet.<name>.psd1` with `-Fleet <name>`, or to the file `-FleetConfig <path>` names. If that file is there already and holds groups, you are asked to type `YES`. Either way, the old file is kept beside it as `fleet.psd1.bak-<date>_<time>` (a copy is never overwritten), and its top-level settings (`StagingRoot`, `StagingFolders`, `CentralLogRoot`, `InstallScript`, `JavaPatchDir`) are carried over. The groups all come from the spreadsheet. A note, also in the dry run, names any group of the old file that the spreadsheet does not hold, and any setting the old file sets for a group that the spreadsheet leaves blank, because the new file will not have them.
+- **Java4Shell patch.** A new fleet file has the `JavaPatchDir` line commented out. If your connector version needs the patch (section 6, step 5), open `fleet.psd1` and remove the `#` in front of that line.
+- The import ends by giving the next commands: `-Mode Verify`, then a dry run (section 8). They name the file written whenever a run would not pick it by itself. When that is because a `fleet.<this computer name>.psd1` or `fleet.<this computer domain>.psd1` is also there, a note says so.
+
+The full rules (accepted spellings, how a CSV file is read, every check) are in `docs/Fleet-File-Reference.md`, under "Building the fleet file from a spreadsheet".
+
+### 7.2 Connectors already installed: let Discover start the sheet
+
+If your connectors are already installed, `-Mode Discover` reads their current settings and writes them as a spreadsheet in the same columns, ready for 7.1. It only reads: it changes nothing on the connectors and copies nothing to them. It uses SSH (section 4) and asks for no password.
+
+Name the connectors with `-Connector`; no fleet file is needed for this. A backtick at the end of a line continues the command in PowerShell; in another shell, type the command on one line.
+
+```
+pwsh ./Invoke-AccessConnectorUpgrade.ps1 -Mode Discover `
+    -Connector connector1.example.local,connector2.example.local
+```
+
+Once you have a fleet file, leave out `-Connector` to read every connector in it, or add `-Tenant` to read only some groups. With `-Connector`, `-Tenant` has no effect; a host you name that is in the fleet file is still matched with its entry.
+
+It shows a line for each connector and writes `fleet.discovered_<date>_<time>.csv` in `FleetDeploy`. `-ExportCsv <path>` names another file, or a folder to write that file in: one that exists, or a path with no file extension or ending in `/` (made when it is not there); an existing file is never overwritten. A connector it cannot reach still gets a row, with the reason in `Notes`. At the end it says how many rows still need values, and shows two commands that import the file. Then:
+
+1. Open the CSV file in Excel. If your regional settings use `;` as the list separator, Excel puts each whole row in one cell: open the file with Data > From Text/CSV instead, and choose Comma as the delimiter. The `Notes` column says what was found on each connector, and `fill:` names the columns that still need a value.
+2. Fill in the blanks. The usual ones are `Installer`, when `Installers` holds more than one installer; `ConfigFile`, when no single file in `Configs` is named after the tenant's host name; and `Pfx`, when the connector serves the installer's self-signed certificate (the note then says to run `-Mode RepairCertificate` afterwards). For a connector that is already in the fleet file, the tool fills these from its entry when it can, and the note says which. Check the `Group` names and change them as you like. A name ending in `-2` or `-3` marks a connector whose settings differ from the rest of its group; the connectors closest to the fleet entry keep its name, and the `differs from fleet entry` note says what differs.
+3. Save it as an Excel workbook, for example `fleet.xlsx`. Before you type a version such as `ExpectVersionPrefix`, format that column as Text. (You can also save it as a CSV file again and import that, if you type no version: in a CSV file Excel turns `26.10` into `26.1`.)
+4. Import it as in 7.1, steps 3 and 4: `-DryRun` first, then without. Use the two commands Discover showed, with the name of the file you saved in place of the draft's name. Keep the rest of each command as shown: it names the fleet file to write. For example:
+
+```
+pwsh ./Invoke-AccessConnectorUpgrade.ps1 -ImportFleet ./fleet.xlsx `
+    -FleetConfig '<the path Discover showed>' -DryRun
+```
+
+Which fleet file those commands write:
+
+- **Discover read a whole fleet file** (every connector in it, also when you named each one with `-Connector` or every group with `-Tenant`): that file. Replacing it asks for `YES`, keeps the old file as a copy, and a note names every group, connector and setting the new file would not have (a group Discover split off as `<entry>-2` is compared with `<entry>`). If the fleet file sets `ExpectVersionPrefix`, that note names it, because Discover always leaves it blank: type it in at step 3 to keep it. A connector that could not be reached still counts as read: fill its row in by hand rather than deleting it, or the import removes it from the file.
+- **Discover read only part of a fleet file** (`-Tenant` or `-Connector` left some of its connectors out): a new file, `fleet.discovered_<date>_<time>.psd1` beside it, which Discover writes itself, with the original's top-level settings (such as `StagingRoot` and `JavaPatchDir`) and no groups. A warning says how many connectors were left out and names the file. Importing part of the fleet into the original would replace the whole file and drop the groups the draft does not hold. Importing into the new file needs no `YES`, and keeps those settings. To keep one fleet file instead, add the other groups' rows to the sheet and import it with `-FleetConfig` naming the original.
+- **There was no fleet file:** `fleet.psd1`.
+
+Discover sends back only the settings it needs. It never keeps or sends back the passwords and secrets the connector holds, even where they sit in the same file as a setting it reads. What it reads, and how each column is filled, is in `docs/Fleet-File-Reference.md`, under "Discovering existing connectors".
 
 ## 8. Your first run
 
@@ -358,11 +438,13 @@ If you are using WinRM, add `-Mode WinRM` to the dry run and the real run:
 ./Invoke-AccessConnectorUpgrade.ps1 -Mode WinRM -Tenant TENANT1
 ```
 
-To start a run in one line from another shell or a scheduler, put `pwsh` in front (on Windows, `pwsh -ExecutionPolicy Bypass -File`):
+To start a run in one line from another shell or a scheduler, put `pwsh` in front (on Windows, `pwsh -ExecutionPolicy Bypass -File`; from a scheduler, add `-NonInteractive` so that a run stops at a prompt instead of waiting):
 
 ```
 pwsh ./Invoke-AccessConnectorUpgrade.ps1 -Tenant TENANT1 -DryRun
 ```
+
+Passwords are only ever asked at prompts. A run started with no terminal to type them in (with its input redirected, or with `pwsh -NonInteractive`) stops at the first prompt with exit code 1 and changes nothing. When you schedule a run, start it with `pwsh -NonInteractive` so that it stops instead of waiting: "A prompt needs an answer, but this run has no terminal to type it in". For a change window with nobody at the keyboard, use Stage mode: see `docs/Implementation-Guide.md`, under "Unattended".
 
 ### What you are asked for
 

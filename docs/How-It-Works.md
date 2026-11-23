@@ -4,7 +4,7 @@
 
 | Script | Runs on | Runs under | Job |
 |---|---|---|---|
-| `FleetDeploy/Invoke-AccessConnectorUpgrade.ps1` | Your admin machine | PowerShell 7 | Reads the fleet file, asks for passwords, copies files to each connector, starts the helper, enforces the one-at-a-time order and the health gate, writes the summary |
+| `FleetDeploy/Invoke-AccessConnectorUpgrade.ps1` | Your admin machine | PowerShell 7 | Reads the fleet file, asks for passwords, copies files to each connector, starts the helper, enforces the one-at-a-time order and the health gate, writes the summary. Also writes the fleet file from a spreadsheet (`-ImportFleet`) and reads installed connectors into one (`-Mode Discover`). |
 | `FleetDeploy/Invoke-ConnectorUpgradeLocal.ps1` | Each connector | Windows PowerShell 5.1, elevated | Records the state before, runs the wrapper, restores the Kerberos certificate, runs the optional patch, checks health, cleans the vendor log, returns a result |
 | `Silent Install/Install-AccessConnector.ps1` | Each connector | Windows PowerShell 5.1 | Pre-flight checks, stops the services, runs the vendor installer silently, starts the services, checks the Kerberos keytab, writes an audit log |
 
@@ -112,6 +112,33 @@ If the account name or password is wrong, the task fails to start and nothing is
 4. judges the result by the vendor script's exit code and log, not by file size alone;
 5. restarts the Kerberos Auth service.
 
+## Building a fleet file from a spreadsheet
+
+`-ImportFleet` runs entirely on the admin machine, under PowerShell 7. It reads the spreadsheet and the staging folder and writes the fleet file. It contacts no connector and asks for no password.
+
+1. **Read.** An `.xlsx` workbook is opened as the zip archive it is and its first visible worksheet read from the XML inside, so Excel is not needed; hidden sheets in front of it are passed over and named. A CSV file is read with its encoding and delimiter worked out from the file itself.
+2. **Convert.** Headers are matched to the known columns, and rows are grouped by `Group`. Each group's settings are taken from its rows (the first value counts; a different later value is a problem), and values are put in fleet-file form: services in their full names and fixed order, yes/no values as `$true`/`$false`, ports as numbers, paths with backslashes.
+3. **Check.** The spreadsheet's own rules first (required columns and values, unknown or password-like columns, Excel error values, line breaks outside `Services`, duplicate hosts, versions), then the checks a run makes on a fleet file (known settings, ports, `EnableFips`, `InstallDir`, proxy settings). Files missing from the staging folder are warnings here, not problems, because they can be added before the first run; they are shown together as one note.
+4. **Show.** The spreadsheet and how it was read (for a workbook, the sheet), the fleet file to be written as a full path and what chose it, then each group: its services, a line with its files and accounts, a line with its installer settings, and its connectors. Then the warnings and problems. When an existing file would be replaced, the warnings name its groups that the spreadsheet does not hold, and the settings of kept groups that the spreadsheet leaves blank. Any problem stops here with nothing written; so does `-DryRun`.
+5. **Write.** An existing fleet file that holds groups is replaced only after `YES` (or `-Yes`); one that holds none, such as the file a partial Discover starts, is replaced without asking. Either way it is first copied to `<file>.bak-<yyyyMMdd_HHmmss>` (with `-1`, `-2` added when that name is taken, so no copy is overwritten). The new file carries over the old file's top-level settings. It is written under a temporary name beside the target and then moved into place.
+6. **Read back.** The new file is read as a run would read it and compared with what the spreadsheet said. A difference is an error; when a file was replaced, the previous one is put back from its copy.
+7. **Next.** The next commands are shown, naming the file written when a run would not pick it by itself.
+
+## Discovering existing connectors
+
+`-Mode Discover` reads connectors that are already installed and turns what it finds into rows for `-ImportFleet`.
+
+| Step | Runs on | What happens |
+|---|---|---|
+| 1 | Admin machine | The connectors are taken from `-Connector` (then `-Tenant` has no effect, and each host that is in the fleet file is still matched with its entry), or from the fleet file in use, limited by `-Tenant`. The output file is checked before any connector is read: the file must not exist, and its folder is made when it does not. A folder named with `-ExportCsv` gets the dated file name in it. |
+| 2 | Each connector, in turn | One short read-only script is sent over SSH on standard input to `powershell -NoProfile -NonInteractive -Command -`, so it runs under Windows PowerShell 5.1. Unlike `-Mode Verify`, which copies the helper script to the connector first, Discover copies nothing and creates nothing there: no staging folder, no file, no task. The script sends back only the settings on its allow-list (Security, and the Fleet File Reference); in `install.properties`, which also holds secrets, it checks each line's name before it keeps anything. Each item has its own error handler, so a missing item gives an empty value and a short reason rather than a failure. It returns a single line of JSON. |
+| 3 | Admin machine | Each answer is turned into a row. The installer, configuration file, PFX and trusted certificates are matched against the file names in the staging folder (`Installers`, `Configs`, `ChildCerts`, `TrustedCerts`); no file there is opened. For a connector listed in the fleet file, what could not be matched is taken from its entry, and the entry is compared with what was found. Connectors of one group whose settings differ (other than in upper and lower case) are split into groups of their own: the rows closest to the fleet entry keep its name, and the others get `-2`, `-3` and so on. The rows stay in their order. |
+| 4 | Admin machine | The rows are written to a new CSV file, with notes on what was found and what is left to fill in. When every connector of the fleet file was read, the next commands shown import the draft into that fleet file, named as `-Fleet <name>` when `-Fleet` was used, else by its full path. A connector that could not be reached still counts as read. When `-Tenant` or `-Connector` left some of its connectors out, importing into the original would drop their groups, so Discover writes a new `fleet.discovered_<date>_<time>.psd1` beside it, holding the original's top-level settings and no groups, and the next commands import into that file instead. A warning says how many connectors were left out and names the new file. |
+
+The connector does not record which es-config file or PFX it was installed with (see Engineering Notes), so those two are matched by name: the configuration file by the tenant's host name (or, failing that, its first name part, with a note to check it), the PFX by the certificate the Kerberos Auth service serves.
+
+A connector that cannot be reached is listed on screen and still gets a row, with an empty `Group` and the reason in `Notes`.
+
 ## Files left on a connector
 
 | Path | Contents |
@@ -122,3 +149,5 @@ If the account name or password is wrong, the task fails to start and nothing is
 | `...\CertBackup\change_<stamp>\` | Copy of the Kerberos Auth configuration taken before each certificate change |
 
 The folder is readable by Administrators and SYSTEM only. Nothing in it is removed automatically.
+
+`-Mode Discover` writes nothing on a connector. (Windows still records the SSH sign-in, as it does any other.)

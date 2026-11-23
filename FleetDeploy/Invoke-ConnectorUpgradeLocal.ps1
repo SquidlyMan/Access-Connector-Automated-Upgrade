@@ -34,7 +34,7 @@ param(
     [switch]$Help
 )
 
-$script:Version  = '1.4.1'
+$script:Version  = '1.5.0'
 $script:UiWidth  = 78
 $script:Name     = 'Invoke-ConnectorUpgradeLocal.ps1'
 $script:Started  = Get-Date

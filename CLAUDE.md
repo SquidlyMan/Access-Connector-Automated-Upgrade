@@ -11,15 +11,16 @@ Fleet tool that installs, upgrades and repairs Omnissa Access Connectors over SS
 | `FleetDeploy/Invoke-AccessConnectorUpgrade.ps1` | Orchestrator. PowerShell 7. Runs on the admin machine. |
 | `FleetDeploy/Invoke-ConnectorUpgradeLocal.ps1` | Helper. Windows PowerShell 5.1. Runs on each connector. |
 | `Silent Install/Install-AccessConnector.ps1` | Wrapper around the vendor installer. Windows PowerShell 5.1. |
+| `FleetDeploy/fleet.example.psd1`, `fleet.example.csv`, `fleet.example.xlsx` | Example fleet file and the spreadsheet templates for `-ImportFleet` (the two templates are built by `tools/build_fleet_template.py`; do not edit them by hand) |
 | `docs/Getting-Started.md` | Source of `Getting-Started.docx` and `.pdf` |
-| `tools/` | `check_scripts.sh` (offline checks), `build_getting_started.py` (Word build) |
+| `tools/` | `check_scripts.sh` (offline checks), `build_getting_started.py` (Word build), `build_fleet_template.py` (spreadsheet templates), `test_fleet_import.ps1`, `test_fleet_discover.ps1`, `test_fleet_e2e.ps1` (offline test suites) |
 
 ## Rules for this repository
 
 - **Version-neutral.** Never tie the tool, its name, help text or documents to one connector version. The version installed is whichever installer the fleet file names.
 - **No site details in the repository.** No real host names, tenant names, domains, IP addresses, account names or share paths. Use `TENANT1`, `connector1.example.local`, `EXAMPLE\svc-access`. Site fleet files, installers, tenant configuration files, PFX files and logs are git-ignored; keep it that way.
 - **No secrets anywhere.** Never print, log or commit a password, key, token or the contents of an `es-config.json`. Never print the `Adding AW... property` lines of an `AccessConnector_MSI_*.log`; count them instead.
-- **Connector-side scripts are ASCII-only and Windows PowerShell 5.1 compatible** (no ternary, no `&&`/`||`, no `?.`). The orchestrator may use PowerShell 7 features.
+- **Connector-side scripts are ASCII-only and Windows PowerShell 5.1 compatible** (no ternary, no `&&`/`||`, no `?.`). This includes `$script:DiscoverRemoteScript` in the orchestrator, which runs on each connector from standard input (`powershell -Command -`) and must stay read-only and allow-list only: it may never keep or send a value of `install.properties` or `application.properties` other than the allow-listed lines. The orchestrator may use PowerShell 7 features.
 - **State only what is proven.** `docs/Validation-Record.md` separates what a real run has proven from what is only built. Keep it honest when you change anything.
 - **Both scripts in `FleetDeploy` carry the same version** and are released together. Help-text-only and document-only changes are a patch version.
 - Follow the owner's Omnissa PowerShell standards for these scripts: colour help wrapped at 78 columns with worked examples, the disclaimer (red in `-Help`, yellow notice on every run), append-only audit log and error log switches, secrets masked everywhere, and switch conflicts reported before work starts.
@@ -30,7 +31,13 @@ Fleet tool that installs, upgrades and repairs Omnissa Access Connectors over SS
 sh tools/check_scripts.sh
 ```
 
-It parses the three scripts, checks for PowerShell 7-only constructs and non-ASCII bytes, checks the help width and that the two versions match. It never runs the scripts against anything.
+It parses the three scripts, checks for PowerShell 7-only constructs and non-ASCII bytes, checks the help width and that the two versions match, runs the three offline test suites, checks that the committed spreadsheet templates equal a fresh build, and dry-runs `-ImportFleet` on both. It contacts no connector, domain controller or share: the suites use temporary folders and a stand-in for `ssh`.
+
+After changing the example rows or the instruction text in `tools/build_fleet_template.py`:
+
+```bash
+python3 tools/build_fleet_template.py
+```
 
 After editing `docs/Getting-Started.md` (keep lines inside code blocks at 82 characters or fewer, or they wrap in Word):
 
