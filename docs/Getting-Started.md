@@ -223,11 +223,25 @@ If that fails, run `Enable-PSRemoting -Force` in an elevated PowerShell window o
 
 Then add `-Mode WinRM` to the upgrade commands in this guide. The tool asks for the domain sign-in once per tenant.
 
-What to know about WinRM mode:
+### 5.1 What you cannot do without SSH
 
-- Upgrades and clean installs work. `-Mode Verify`, `-Mode RepairKeytab` and `-Mode RepairCertificate` always use SSH.
-- Each connector's logs stay on the connector in `C:\ProgramData\AccessConnectorUpdate\Logs`. They are not copied back.
-- Kerberos Auth connectors are upgraded through a one-time scheduled task under the sign-in you give, or directly with `-Authentication CredSSP` if you have CredSSP set up. Neither has been proven in testing yet; WinRM mode has been proven on connectors without Kerberos Auth.
+When the connectors have no SSH, these parts of the tool are **not available**:
+
+| Not available without SSH | What it would have done | What you can do instead |
+|---|---|---|
+| `-Mode Verify` | Report every connector's version, services, patch flag, keytab and certificate from the admin machine, changing nothing | Read the result of each WinRM run (it ends with the same state line). On a connector, `Invoke-ConnectorUpgradeLocal.ps1 -VerifyOnly` in the staging folder prints the same report. |
+| `-Mode RepairKeytab` | Rebuild an empty Kerberos keytab, run as a domain admin through a scheduled task | Run the helper on the connector with `-RepairKeytab`, signed in there as a domain admin |
+| `-Mode RepairCertificate` | Put the PFX certificate back on the Kerberos Auth service | Run the helper on the connector with `-RepairCertificate -Prompt -CertFile <pfx>` |
+| `-Mode Stage` | Copy everything to the connectors and write `Run-Upgrade.cmd`, for an upgrade you start or schedule on the server later (`-Schedule`) | Run the upgrade over WinRM at the time you want, or copy the files yourself |
+| Logs copied back | Each connector's logs collected in `FleetDeploy\FleetLogs` beside the summary | The logs stay on each connector in `C:\ProgramData\AccessConnectorUpdate\Logs` |
+
+The "instead" routes need a sign-in on the connector itself, which this tool exists to avoid, and they have not been tested from a remoting session. If you need the report and repair modes, open SSH on at least the connectors that run Kerberos Auth; the two routes can be mixed.
+
+Everything else works over WinRM: upgrades, clean installs, `-ForceReinstall` (including changing the services), `-DryRun`, one connector at a time with the health gate, `-ParallelTenants` and `-Parallel`, the summary on screen and in the CSV, the keytab check and the certificate step at the end of a Kerberos Auth upgrade, and the cleaning of the installer's log on the connector.
+
+### 5.2 Kerberos Auth connectors over WinRM
+
+Kerberos Auth connectors are upgraded through a one-time scheduled task under the sign-in you give, or directly with `-Authentication CredSSP` if you have CredSSP set up. Neither has been proven in testing yet; WinRM mode has been proven on connectors without Kerberos Auth.
 
 ## 6. Build the staging folder
 
