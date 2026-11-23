@@ -67,6 +67,25 @@ A worked example is in Getting Started, section 11.
 | `ForceReinstall` | No | `$true` makes every run of this entry uninstall and reinstall a connector already on the installer's version. Usually left `$false` and given on the command line when wanted. |
 | `Connectors` | Yes | The servers, in the order they are done. |
 
+### Installer settings (optional)
+
+Leave any of these out to get the installer's default. They apply to every connector in the entry, on a clean install and on an upgrade (the vendor asks for custom settings to be supplied again at upgrade time).
+
+| Setting | Meaning |
+|---|---|
+| `InstallDir` | Folder the connector is installed under, as a full Windows path, for example `'D:\Program Files'`. The connector goes in `<InstallDir>\Access Connector`. Default `C:\Program Files`. An installed connector is not moved by an upgrade; the run warns when this names a different folder. |
+| `EnableFips` | `$true` installs in FIPS mode (Omnissa Access FedRAMP tenants only). FIPS mode cannot be changed after install, so a run whose setting differs from the installed connector's is refused (`Blocked`). |
+| `DirectorySyncPort` | Directory Sync port. Default 8080. |
+| `UserAuthPort` | User Auth port. Default 8090. |
+| `KerberosAuthPort` | Kerberos Auth port, the only inbound one. Default 443. |
+| `VirtualAppPort` | Virtual App port. Default 8008. |
+| `ProxyHost` | Outbound proxy name or address. Setting it turns the proxy on. |
+| `ProxyPort` | Proxy port. Needs `ProxyHost`. |
+| `ProxyUser` | Proxy account; makes the proxy authenticated. Needs `ProxyHost`. Its password is asked at run time and must not contain a double quote. |
+| `NonProxyHosts` | Hosts reached directly, separated by `\|`, for example `'host1.example.local\|host2.example.local'`. Needs `ProxyHost`. |
+
+Known limitation: `-Mode RepairCertificate`, and the certificate step at the end of an upgrade, refuse connectors in FIPS mode or with a proxy account (`ProxyUser`), because the vendor script they use would clear the stored proxy password. For those connectors, a Kerberos upgrade ends `Unhealthy` with a message saying the certificate was not changed; put the certificate back with the installer's Add/Remove Services.
+
 ### Connector settings
 
 | Setting | Required | Meaning |
@@ -89,7 +108,10 @@ Before anything is contacted, the tool confirms that:
 - every tenant named with `-Tenant` exists;
 - at least one connector is selected;
 - `Installer`, `ConfigFile` and `Services` are present for each selected tenant;
-- every file and folder named exists under the staging root (`Installer`, `ConfigFile`, `TrustStore`, `Pfx`, `InstallScript`, and `Java4shellPatch.bat` when `JavaPatchDir` is set).
+- every file and folder named exists under the staging root (`Installer`, `ConfigFile`, `TrustStore`, `Pfx`, `InstallScript`, and `Java4shellPatch.bat` when `JavaPatchDir` is set);
+- the installer settings are valid: ports are numbers from 1 to 65535 and no two services share one, `EnableFips` is `$true` or `$false`, `InstallDir` is a full Windows path, the proxy settings have a `ProxyHost` and hold no spaces or double quotes.
+
+A setting the tool does not know (a misspelling such as `ProxyHots`) is named in a note before the plan, and ignored.
 
 If files are missing, the message lists each one. When another copy of the staging folder has them, it names that copy and the `cd` command to use.
 

@@ -1,6 +1,6 @@
 # Validation Record
 
-What has been proven by a real run, and what has been built but not yet proven. Last updated 2026-11-22.
+What has been proven by a real run, and what has been built but not yet proven. Last updated 2026-11-22 (version 1.4.0).
 
 "Proven" means the path ran for real against a connector and the result was checked independently afterwards (services, health pages, version, keytab, served certificate, logs), not just that the tool reported success.
 
@@ -33,6 +33,7 @@ Server and tenant names are left out of this record on purpose.
 | Installer-log cleaning | Every upgrade since it was added | No encoded password left on the connectors or in the copies brought back |
 | Missing-files message naming the other copy of the staging folder | Observed | Correct folder and `cd` command shown |
 | Fleet file chosen by `-Fleet <name>` and by default (`fleet.psd1`) | Used throughout | Correct file picked; reason shown in the plan |
+| End-user **Kerberos sign-in** after `-Mode RepairCertificate` | Confirmed by the operator | Sign-in worked through the repaired connectors |
 
 ## Built but not yet proven by a real run
 
@@ -47,14 +48,18 @@ Server and tenant names are left out of this record on purpose.
 | SSH modes from a **Windows or Linux** admin machine | Only macOS was used for SSH modes |
 | OpenSSH on the connector with the stock default shell (cmd.exe) | The test connectors use PowerShell 7 as the default shell |
 | Connector versions other than those listed above | The code has no version-specific logic apart from the optional patch step, but no other version has been run |
-| A connector with a proxy, custom ports, a non-default install folder or FIPS mode | Not supported through the fleet file yet (see Roadmap). Certificate repair refuses FIPS mode and proxy-user configurations. |
-| An actual Kerberos sign-in by an end user after a certificate repair | The served certificate, health page and keytab were checked; a sign-in test is the operator's to do |
-| Version 1.3.1 | Help text only; the logic is identical to 1.3.0, confirmed by comparing the files. 1.3.1 has run `-Mode Verify` against all ten connectors from both staging copies (2026-11-22). Its install and repair modes have not been run again since 1.3.0. |
+| Installer settings from the fleet file (1.4.0): proxy, custom ports, non-default install folder, FIPS mode | Built. The fleet-file checks, the plan line and the job file were exercised offline with placeholder hosts. No connector has been installed with any of them. The `FIPS_ENABLED` and `INSTALL_DIR` lines the helper reads were confirmed on a real connector (names and non-secret values only). Certificate repair still refuses FIPS mode and proxy-user configurations. |
+| Proxy password hand-over (1.4.0): fourth line on standard input, WinRM parameter, protected task file, `-Prompt`, `-Schedule` | Built, not run |
+| Helper finding a connector outside `C:\Program Files` (1.4.0) | Built. The service-path pattern was checked against a real connector's service paths; no connector in a non-default folder exists to run it against |
+| Wrapper served-certificate check by TLS handshake (1.4.0) | The function was checked offline under PowerShell 7 against a local TLS server (thumbprint matched openssl's). The same method is proven under Windows PowerShell 5.1 in the helper. Not yet run inside the wrapper on a connector |
+| Wrapper keytab-log check limited to this run (1.4.0) | Checked offline with made-up logs (earlier failure ignored, newest result judged, failure in this run caught). Not yet run on a connector |
+| Orchestrator refusing Windows PowerShell 5.1 (1.4.0) | The check is the first statement after the notice; not run under 5.1 |
+| Version 1.4.0 | Run 2026-11-22: `-Mode Verify` from both staging copies (all connectors OK), and `-DryRun` over SSH for one four-service Kerberos group (through the scheduled task) and one three-service group (direct), both `DryRunPassed`. That proves the four-line secret hand-over, the task route and the new job file on real connectors, and that the FIPS check does not refuse a connector whose setting matches. Those connectors were already on the installer's version, so the wrapper skipped and its pre-flight checks did not run (see Known weaknesses). Not yet run: WinRM mode, a real install, any of the new settings set to a non-default value. |
 
 ## Known weaknesses
 
-- The wrapper's own served-certificate comparison never fires under Windows PowerShell 5.1 (see Engineering Notes). The helper's check covers it.
-- The wrapper's keytab-log check reads the first result line of the whole vendor log, which is appended to on every run.
+- Fixed in 1.4.0, not yet proven on a connector: the wrapper's served-certificate comparison never fired under Windows PowerShell 5.1, and its keytab-log check read the first result line of the whole vendor log. The helper's own checks covered both before and still do.
+- A dry run against a connector already on the installer's version reports `DryRunPassed` without testing any password: the wrapper decides to skip before its pre-flight checks. Only a dry run against an older connector (or with `-ForceReinstall`) proves the passwords.
 - The Active Directory reachability test proves read access only, not that the account can create or reset the connector's account.
 - WinRM mode does not copy logs back and has no report or repair modes.
 - `-Mode Verify` copies the helper to the connector, so it is not strictly read-only.

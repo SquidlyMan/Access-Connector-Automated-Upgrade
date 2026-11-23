@@ -35,7 +35,7 @@ Copied to `C:\ProgramData\AccessConnectorUpdate` on the connector (changeable wi
 | The Kerberos PFX | Only when the tenant has a `Pfx` |
 | `TrustedCerts\` | `.pem`, `.cer`, `.crt` files only |
 | `Java4shellPatch\` | Only when `JavaPatchDir` is set and `-SkipJavaPatch` is not |
-| `job.json` | What to install: file names, services, service account name, syslog, flags. No passwords. |
+| `job.json` | What to install: file names, services, service account name, syslog, install folder, FIPS mode, ports, proxy host, port, user and direct hosts, flags. No passwords. |
 | `Run-Upgrade.cmd` | Lets you run the same job by hand on the connector |
 
 When the folder is created it is locked so that only Administrators and SYSTEM can read or change it, because the scripts in it run with high privilege.
@@ -45,13 +45,14 @@ When the folder is created it is locked so that only Administrators and SYSTEM c
 1. **Refuse if unsafe.** If the server's PowerShell module-logging policy would write command parameters (and so the passwords) to the event log, nothing is started.
 2. **State before.** Installed version, each connector service and its state, the Java processes, keytab size, free disk space, pending reboot.
 3. **Kerberos sign-in check.** For a tenant with Kerberos Auth, the helper tests whether the sign-in it is running under can query Active Directory. If it cannot, it refuses (`Blocked`) rather than leave the connector with an empty keytab. This is why the main script starts the helper as a scheduled task under a domain admin account for these connectors.
-4. **Keytab copy.** A usable keytab is copied to a private folder first, because the installer removes it.
-5. **Install.** The wrapper runs its pre-flight checks. On a dry run it stops there. Otherwise it stops the connector services, runs the vendor installer silently (with `REBOOT=ReallySuppress`, so the server is never restarted by surprise) and starts the services.
-6. **Vendor log cleaned.** The vendor installer records the passwords it was given in its own MSI log, base64-encoded. The helper replaces every such value with asterisks straight away.
-7. **Kerberos certificate.** For Kerberos Auth with a `Pfx`: the helper looks at the certificate the service is actually serving. If it is not the PFX certificate (after an upgrade it never is; see Engineering Notes), it installs the PFX certificate with the vendor's own maintenance script and checks again.
-8. **Optional patch.** When the job asks for it, the vendor `Java4shellPatch.bat` is run.
-9. **Health check.** Up to four minutes are allowed for the services to come up. Then every item in the table below is checked.
-10. **Result.** A result is written to `Logs\result.json` and returned to the main script.
+4. **Settings that cannot change.** On an installed connector, a job asking for a different FIPS mode than the one installed is refused, because FIPS mode cannot be changed after install. A different install folder only gives a warning.
+5. **Keytab copy.** A usable keytab is copied to a private folder first, because the installer removes it.
+6. **Install.** The wrapper runs its pre-flight checks. On a dry run it stops there. Otherwise it stops the connector services, runs the vendor installer silently (with `REBOOT=ReallySuppress`, so the server is never restarted by surprise) and starts the services.
+7. **Vendor log cleaned.** The vendor installer records the passwords it was given in its own MSI log, base64-encoded. The helper replaces every such value with asterisks straight away.
+8. **Kerberos certificate.** For Kerberos Auth with a `Pfx`: the helper looks at the certificate the service is actually serving. If it is not the PFX certificate (after an upgrade it never is; see Engineering Notes), it installs the PFX certificate with the vendor's own maintenance script and checks again.
+9. **Optional patch.** When the job asks for it, the vendor `Java4shellPatch.bat` is run.
+10. **Health check.** Up to four minutes are allowed for the services to come up. Then every item in the table below is checked.
+11. **Result.** A result is written to `Logs\result.json` and returned to the main script.
 
 ### The health check
 

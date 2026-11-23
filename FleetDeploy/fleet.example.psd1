@@ -70,6 +70,18 @@
             Services            = 'DirectorySyncService,UserAuthService,VirtualAppService'
             ServiceAccount      = 'EXAMPLE\svc-access'
             ForceReinstall      = $false
+
+            # Optional installer settings. Leave any of them out to use the installer default.
+            # InstallDir        = 'D:\Program Files'      # the connector goes in <InstallDir>\Access Connector
+            # EnableFips        = $false                  # FedRAMP tenants only; cannot change after install
+            # DirectorySyncPort = 8080
+            # UserAuthPort      = 8090
+            # KerberosAuthPort  = 443
+            # VirtualAppPort    = 8008
+            # ProxyHost         = 'proxy.example.local'   # outbound proxy; the others need it
+            # ProxyPort         = 3128
+            # ProxyUser         = 'EXAMPLE\svc-proxy'     # its password is asked at run time
+            # NonProxyHosts     = 'host1.example.local|host2.example.local'
             Connectors = @(
                 @{ Host = 'connector3.example.local' }                          # SshUser defaults to administrator
                 @{ Host = 'connector4.example.local' }

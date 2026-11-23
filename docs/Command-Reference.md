@@ -4,7 +4,7 @@ Everything here can also be shown on screen with `-Help`.
 
 ## Invoke-AccessConnectorUpgrade.ps1
 
-The script you run, from the `FleetDeploy` folder, with PowerShell 7.
+The script you run, from the `FleetDeploy` folder, with PowerShell 7 or later. Under Windows PowerShell 5.1 it stops at once and says to use `pwsh`.
 
 ```powershell
 pwsh ./Invoke-AccessConnectorUpgrade.ps1 [-Mode <mode>] [-Tenant <names>] [-Connector <hosts>] [options]
@@ -131,7 +131,7 @@ The helper. It runs on the connector under Windows PowerShell 5.1, elevated. The
 | `-SkipDomainCheck` | As above. |
 | `-JobFile <path>` | Job file. Default `job.json` beside the script. |
 | `-AuditLog`, `-ErrorLog` | Default: the `Logs` folder beside the script. |
-| `-SecretsFromStdin`, `-SecretsFile`, `-RunAsTask`, the three `-...Password` parameters | Used by the main script to hand over passwords. Not for hand use. |
+| `-SecretsFromStdin`, `-SecretsFile`, `-RunAsTask`, the four `-...Password` parameters | Used by the main script to hand over passwords. Not for hand use. `-SecretsFromStdin` reads four base64 lines (configuration, PFX, service account, proxy; empty where not needed), then with `-RunAsTask` two more (account and password for the task). |
 
 Examples, on the connector:
 
@@ -150,8 +150,10 @@ powershell -ExecutionPolicy Bypass -File C:\ProgramData\AccessConnectorUpdate\In
 
 The wrapper around the vendor installer. The helper calls it; it can also be used on its own on a single server. It builds the silent install command, runs pre-flight checks, stops and starts the services, and writes an audit log beside the MSI log.
 
-Parameters the fleet tool sets from the fleet file: `-InstallerPath`, `-ConfigFilePath`, `-Services`, `-TrustStoreCertsPath`, `-SslCertPath`, `-ServiceAccount`, `-SyslogHost`, `-InstallerVersion`, `-ForceReinstall`, `-DryRun`, and the three password parameters.
+Parameters the fleet tool sets from the fleet file: `-InstallerPath`, `-ConfigFilePath`, `-Services`, `-TrustStoreCertsPath`, `-SslCertPath`, `-ServiceAccount`, `-SyslogHost`, `-InstallerVersion`, `-ForceReinstall`, `-DryRun`, `-InstallDir`, `-EnableFips`, `-DirectorySyncPort`, `-UserAuthPort`, `-KerberosAuthPort`, `-VirtualAppPort`, `-ProxyHost`, `-ProxyPort`, `-ProxyUser`, `-NonProxyHosts`, and the four password parameters (configuration file, PFX, service account, proxy). The helper also passes `-ExtraMsiProperties REBOOT=ReallySuppress`, and `-ValidateServiceAccount` when it runs under a domain sign-in.
 
-Parameters the wrapper has that the fleet tool does not set yet (use the wrapper directly if you need them): `-InstallDir`, `-EnableFips`, `-DirectorySyncPort`, `-UserAuthPort`, `-KerberosAuthPort`, `-VirtualAppPort`, `-ProxyHost`, `-ProxyPort`, `-ProxyUser`, `-ProxyPassword`, `-NonProxyHosts`, `-ShowInstallerUI`, `-SkipKeytab`, `-ExtraMsiProperties`.
+Parameters only for running the wrapper by hand: `-ShowInstallerUI`, `-SkipKeytab`, `-ExtraMsiProperties`.
+
+After a successful install with Kerberos Auth, the wrapper compares the certificate the service serves with the PFX. After a fresh install a mismatch makes it exit 1. After an upgrade it is a warning, because the vendor installer never carries the PFX through an upgrade; the fleet tool puts it back afterwards.
 
 Run `Get-Help '.\Install-AccessConnector.ps1' -Full` or `-Help` for its own documentation.

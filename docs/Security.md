@@ -19,6 +19,7 @@ How the tool handles passwords, keys and files, and what you should do yourself.
 | The domain admin account password for the task | Held by Windows Task Scheduler | Only while the task exists. The task deletes itself when the work ends. |
 | Given to the vendor installer | The vendor installer's command line on the connector | **Vendor limitation.** Visible to other administrators on that server while the installer runs. |
 | Recorded by the vendor installer | Its own MSI log, base64-encoded | **Vendor behaviour.** The tool replaces those values with asterisks immediately after every install, on the connector and in any copy brought back. A copy that cannot be checked is not kept. |
+| Proxy password (when `ProxyUser` is set) | Asked, held and handed over exactly like the passwords above | The same; the vendor installer receives it on its command line and may record it in its log, which is cleaned in the same way |
 | Certificate repair | Standard input of a command prompt, then an environment variable inside the vendor script's own process | Not on any command line |
 
 ## Refusals that protect passwords

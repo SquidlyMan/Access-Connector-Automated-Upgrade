@@ -17,6 +17,7 @@ param(
     [securestring]$ConfigFilePassword,
     [securestring]$SslCertPassword,
     [securestring]$ServiceAccountPassword,
+    [securestring]$ProxyPassword,
     [string]$Schedule,
     [switch]$VerifyOnly,
     [switch]$SkipDomainCheck,
@@ -33,7 +34,7 @@ param(
     [switch]$Help
 )
 
-$script:Version  = '1.3.1'
+$script:Version  = '1.4.0'
 $script:UiWidth  = 78
 $script:Name     = 'Invoke-ConnectorUpgradeLocal.ps1'
 $script:Started  = Get-Date
@@ -124,19 +125,20 @@ function Show-Help {
     Write-UiText 'After an upgrade of a connector with the Kerberos Auth service and a PFX, it also puts the PFX certificate back: the vendor installer does not carry it through an upgrade and makes a certificate of its own instead.'
     Write-UiSection 'DESCRIPTION'
     Write-UiText 'Reads a job file written by Invoke-AccessConnectorUpgrade.ps1, runs Install-AccessConnector.ps1 from the same folder against locally staged files, then runs the vendor Java4shellPatch.bat and confirms the connector services are running with -XX:-UseBASE64Intrinsics active.'
+    Write-UiText 'The job file can also carry installer settings from the fleet file (install folder, FIPS mode, service ports, outbound proxy); they are passed to Install-AccessConnector.ps1 unchanged. A connector already installed with a different FIPS setting is refused: FIPS mode cannot be changed after install.'
     Write-UiText 'Secrets arrive on standard input (SSH mode), as SecureString parameters (WinRM mode), from hidden prompts (-Prompt) or from a file encrypted for the current user (scheduled task).'
     Write-UiSection 'PARAMETERS'
     Write-UiParam '-JobFile <path>' 'Job JSON staged beside this script. Default: job.json in this script folder.'
     Write-UiParam '-Prompt' 'Ask for the passwords at hidden prompts. Use when run by hand.'
-    Write-UiParam '-SecretsFromStdin' 'Read three base64 lines (config, PFX, service account) from standard input. Used by SSH mode.'
+    Write-UiParam '-SecretsFromStdin' 'Read four base64 lines (config, PFX, service account, proxy; empty where not needed) from standard input. Used by SSH mode.'
     Write-UiParam '-Schedule <when>' 'With -Prompt: register a one-time scheduled task for the given local time (yyyy-MM-dd HH:mm) under the signed-in account, instead of running now.'
     Write-UiParam '-SecretsFile <path>' 'Secrets file written by -Schedule. Deleted after use.'
-    Write-UiParam '-...Password <s>' 'Three SecureString parameters, -ConfigFilePassword, -SslCertPassword and -ServiceAccountPassword, carry the passwords when another script calls this one (WinRM mode).'
+    Write-UiParam '-...Password <s>' 'Four SecureString parameters, -ConfigFilePassword, -SslCertPassword, -ServiceAccountPassword and -ProxyPassword, carry the passwords when another script calls this one (WinRM mode).'
     Write-UiParam '-VerifyOnly' 'Change nothing; report version, services and patch state.'
     Write-UiParam '-SkipDomainCheck' 'Kerberos connectors only. Upgrade even when this sign-in cannot query Active Directory. The keytab is then left empty until setupKerberos.ps1 is run by a domain admin.'
     Write-UiParam '-RunAsUser <acct>' 'Do the work in a one-time scheduled task under this account (a domain admin) and show its output here. Used by the SSH and WinRM modes for Kerberos connectors, because only a full sign-in can rebuild the keytab. With -RunAsPassword, or -RunAsTask to read both from standard input after the three secrets.'
     Write-UiParam '-RunAsPassword <s>' 'SecureString password for -RunAsUser. It is stored by Task Scheduler only while the task exists; the task removes itself when the work ends.'
-    Write-UiParam '-RunAsTask' 'With -SecretsFromStdin: read the -RunAsUser account and its password as two more base64 lines.'
+    Write-UiParam '-RunAsTask' 'With -SecretsFromStdin: read the -RunAsUser account and its password as two more base64 lines, after the four secrets.'
     Write-UiParam '-CheckOnly' 'With -RepairKeytab: test the sign-in and change nothing. With -RepairCertificate: test the PFX and its password and change nothing.'
     Write-UiParam '-RepairCertificate' 'Do not install anything. Put the certificate from the PFX named by -CertFile on the Kerberos Auth service, using the vendor installKerberosAuthService.bat -updateConfiguration, restart that service and confirm it serves the certificate. The service configuration is copied first and put back if the result is not right. Needs the PFX password (-Prompt, -SecretsFromStdin or -SslCertPassword).'
     Write-UiParam '-CertFile <name>' 'With -RepairCertificate: the PFX file, staged in this script folder.'
@@ -170,7 +172,7 @@ function Show-Help {
     Write-UiSection 'REQUIREMENTS'
     Write-UiText 'Windows PowerShell 5.1, an elevated session, and the staged payload in this folder. A domain admin sign-in is needed only if the Kerberos keytab must be rebuilt.'
     Write-UiSection 'ABOUT'
-    Write-UiText "Version $($script:Version). Created 2026-11-21."
+    Write-UiText "Version $($script:Version). Created 2026-11-21. MIT License; see the LICENSE file."
     Write-UiSection 'DOCUMENTATION'
     Write-UiText 'Omnissa KB 6001878 (CVE-2026-114938 impact) and the Access Connector installation guide.'
     Write-Host ''
@@ -228,8 +230,16 @@ function Get-ConnectorState {
                     KerberosAuthService='Kerberos Auth Service'; VirtualAppService='Virtual App Service' }
     $pkg = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
            Where-Object { $_.DisplayName -eq 'Access Connector' } | Select-Object -First 1
+    # Where the connector is installed: the installer's record, the folder the job names, the
+    # folder a connector service runs from, then the default.
     $root = 'C:\Program Files\Access Connector'
-    if ($pkg -and $pkg.InstallLocation) { $cand = Join-Path $pkg.InstallLocation 'Access Connector'; if (Test-Path $cand) { $root = $cand } }
+    $cands = @()
+    if ($pkg -and $pkg.InstallLocation) { $cands += (Join-Path $pkg.InstallLocation 'Access Connector'); $cands += ([string]$pkg.InstallLocation).TrimEnd('\') }
+    if ($script:JobInstallDir) { $cands += (Join-Path $script:JobInstallDir 'Access Connector') }
+    foreach ($sv in @(Get-CimInstance Win32_Service -Filter "Name LIKE 'Access%Service'" -ErrorAction SilentlyContinue)) {
+        if ($sv.Name -in $svcMap.Values -and [string]$sv.PathName -match '^"?(.*?\\Access Connector)\\') { $cands += $Matches[1] }
+    }
+    foreach ($c in $cands) { if ($c -and ($c -match '\\Access Connector$') -and (Test-Path -LiteralPath (Join-Path $c 'Support'))) { $root = $c; break } }
     $services = @(); $xml = @()
     foreach ($k in $svcMap.Keys) {
         $s = Get-Service -Name $svcMap[$k] -ErrorAction SilentlyContinue
@@ -1055,6 +1065,8 @@ if ($RepairKeytab -or $RepairCertificate) {
     $job = Get-Content -Raw -LiteralPath $JobFile | ConvertFrom-Json
 }
 $needSvc = [bool](@($job.Services) | Where-Object { $_ -in 'KerberosAuthService','VirtualAppService' })
+$needProxy = [bool]($job.ProxyHost -and $job.ProxyUser)
+if ($job.InstallDir) { $script:JobInstallDir = [string]$job.InstallDir }
 
 # ---- a server that records command parameters would record the passwords
 $takesSecrets = (-not $RepairKeytab) -or $RunAsTask -or $RunAsUser
@@ -1071,11 +1083,12 @@ if ($takesSecrets -and (Test-ParameterLogging)) {
 try {
     if ($SecretsFromStdin) {
         $vals = @()
-        for ($i = 0; $i -lt 3; $i++) { $l = [Console]::In.ReadLine(); if ($null -eq $l) { $l = '' }
+        for ($i = 0; $i -lt 4; $i++) { $l = [Console]::In.ReadLine(); if ($null -eq $l) { $l = '' }
             $vals += [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($l.Trim())) }
         if ($vals[0]) { $ConfigFilePassword     = ConvertTo-SecureString $vals[0] -AsPlainText -Force }
         if ($vals[1]) { $SslCertPassword        = ConvertTo-SecureString $vals[1] -AsPlainText -Force }
         if ($vals[2]) { $ServiceAccountPassword = ConvertTo-SecureString $vals[2] -AsPlainText -Force }
+        if ($vals[3]) { $ProxyPassword          = ConvertTo-SecureString $vals[3] -AsPlainText -Force }
         $vals = $null
         if ($RunAsTask) {
             # two more lines: the account for the task and its password
@@ -1090,6 +1103,7 @@ try {
         $ConfigFilePassword = Read-UiSecret 'Configuration file (es-config) password'
         if ($job.Pfx) { $SslCertPassword = Read-UiSecret 'Kerberos SSL PFX password' }
         if ($needSvc -and $job.ServiceAccount) { $ServiceAccountPassword = Read-UiSecret ("Service account password for " + $job.ServiceAccount) }
+        if ($needProxy) { $ProxyPassword = Read-UiSecret ("Proxy password for " + $job.ProxyUser) }
     } elseif ($SecretsFile -and -not $RepairKeytab -and -not $RepairCertificate) {
         $sf = Get-Content -Raw -LiteralPath $SecretsFile | ConvertFrom-Json
         Remove-Item -LiteralPath $SecretsFile -Force -ErrorAction SilentlyContinue
@@ -1098,14 +1112,16 @@ try {
             if ($sf.Cfg) { $ConfigFilePassword     = ConvertTo-SecureString (Unprotect-MachineText $sf.Cfg) -AsPlainText -Force }
             if ($sf.Pfx) { $SslCertPassword        = ConvertTo-SecureString (Unprotect-MachineText $sf.Pfx) -AsPlainText -Force }
             if ($sf.Svc) { $ServiceAccountPassword = ConvertTo-SecureString (Unprotect-MachineText $sf.Svc) -AsPlainText -Force }
+            if ($sf.Proxy) { $ProxyPassword        = ConvertTo-SecureString (Unprotect-MachineText $sf.Proxy) -AsPlainText -Force }
         } else {
             if ($sf.Cfg) { $ConfigFilePassword     = ConvertTo-SecureString $sf.Cfg }
             if ($sf.Pfx) { $SslCertPassword        = ConvertTo-SecureString $sf.Pfx }
             if ($sf.Svc) { $ServiceAccountPassword = ConvertTo-SecureString $sf.Svc }
+            if ($sf.Proxy) { $ProxyPassword        = ConvertTo-SecureString $sf.Proxy }
         }
     }
 } catch { Write-ErrorEntry ("Could not read the secrets: " + $_.Exception.Message) 'secrets'; Write-AuditEntry 'FAILED' 'secrets'; exit 1 }
-foreach ($s in @($ConfigFilePassword, $SslCertPassword, $ServiceAccountPassword)) { if ($s) { Register-Secret (ConvertTo-PlainText $s) } }
+foreach ($s in @($ConfigFilePassword, $SslCertPassword, $ServiceAccountPassword, $ProxyPassword)) { if ($s) { Register-Secret (ConvertTo-PlainText $s) } }
 if ($RepairCertificate) {
     if (-not $SslCertPassword -or $SslCertPassword.Length -eq 0) { Write-ErrorEntry 'Empty PFX password. Nothing was changed.' 'secrets'; Write-AuditEntry 'FAILED' 'secrets'; exit 1 }
 } elseif (-not $RepairKeytab) {
@@ -1114,6 +1130,7 @@ if ($RepairCertificate) {
     if (-not $ConfigFilePassword -or $ConfigFilePassword.Length -eq 0) { $emptyOnes += 'configuration file' }
     if ($job.Pfx -and (-not $SslCertPassword -or $SslCertPassword.Length -eq 0)) { $emptyOnes += 'Kerberos PFX' }
     if ($needSvc -and $job.ServiceAccount -and (-not $ServiceAccountPassword -or $ServiceAccountPassword.Length -eq 0)) { $emptyOnes += 'service account' }
+    if ($needProxy -and (-not $ProxyPassword -or $ProxyPassword.Length -eq 0)) { $emptyOnes += 'proxy' }
     if ($emptyOnes.Count) { Write-ErrorEntry ('Empty password: ' + ($emptyOnes -join ', ') + '. Nothing was changed.') 'secrets'; Write-AuditEntry 'FAILED' 'secrets'; exit 1 }
 }
 
@@ -1165,6 +1182,7 @@ if (($RunAsTask -or $RunAsUser) -and -not $RepairCertificate) {
             $o = @{ Scope = 'Machine'; Cfg = (Protect-MachineText (ConvertTo-PlainText $ConfigFilePassword)) }
             if ($SslCertPassword)        { $o.Pfx = Protect-MachineText (ConvertTo-PlainText $SslCertPassword) }
             if ($ServiceAccountPassword) { $o.Svc = Protect-MachineText (ConvertTo-PlainText $ServiceAccountPassword) }
+            if ($ProxyPassword)          { $o.Proxy = Protect-MachineText (ConvertTo-PlainText $ProxyPassword) }
             Set-Content -LiteralPath $sfPath -Value ($o | ConvertTo-Json) -Encoding ascii -ErrorAction Stop
             $inner = 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -JobFile "{1}" -SecretsFile "{2}"' -f $MyInvocation.MyCommand.Path, $JobFile, $sfPath
             if ($SkipDomainCheck) { $inner += ' -SkipDomainCheck' }
@@ -1277,6 +1295,7 @@ if ($Schedule) {
         $o = @{ Cfg = (ConvertFrom-SecureString $ConfigFilePassword) }
         if ($SslCertPassword) { $o.Pfx = ConvertFrom-SecureString $SslCertPassword }
         if ($ServiceAccountPassword) { $o.Svc = ConvertFrom-SecureString $ServiceAccountPassword }
+        if ($ProxyPassword) { $o.Proxy = ConvertFrom-SecureString $ProxyPassword }
         Set-Content -LiteralPath $sfPath -Value ($o | ConvertTo-Json) -Encoding utf8
         $acct = [Security.Principal.WindowsIdentity]::GetCurrent().Name
         $acctPw = Read-UiSecret "Windows password for $acct (stored by Task Scheduler to run the task)"
@@ -1331,6 +1350,28 @@ if ('KerberosAuthService' -in @($job.Services)) {
     }
 }
 
+# ---- FIPS mode cannot be changed on an installed connector. Refuse a job that asks for the other
+# setting, unless the connector is uninstalled first (-ForceReinstall), or none is installed yet.
+if ($before.InstalledVersion -and -not $job.ForceReinstall) {
+    $props = Join-Path $before.InstallRoot 'Support\scripts\install.properties'
+    if (Test-Path -LiteralPath $props) {
+        $fipsNow = [bool]([string](Get-Content -Raw -LiteralPath $props) -match '(?mi)^[ \t]*FIPS_ENABLED[ \t]*=[ \t]*true')
+        if ($fipsNow -ne [bool]$job.EnableFips) {
+            $result.Status = $(if ($job.DryRun) { 'DryRunFailed' } else { 'Blocked' })
+            $result.Message = $(if ($fipsNow) { 'this connector is installed in FIPS mode; set EnableFips = $true in its fleet entry' } else { 'the fleet entry asks for FIPS mode, but this connector is installed without it, and FIPS mode cannot be changed after install; to change it, upgrade it first with EnableFips = $false, then run with -ForceReinstall (uninstall, then fresh install)' })
+            $result.After = $before
+            Write-ErrorEntry ("Not upgraded: " + $result.Message + ". Nothing was changed.") 'precheck'
+            Write-Result -Result ([pscustomobject]$result) -LogDir $logDir
+            Write-AuditEntry 'FAILED' 'precheck' $result.Message
+            exit 1
+        }
+    }
+}
+if ($before.InstalledVersion -and $job.InstallDir) {
+    $wantRoot = Join-Path ([string]$job.InstallDir) 'Access Connector'
+    if ($wantRoot.TrimEnd('\') -ne ([string]$before.InstallRoot).TrimEnd('\')) { Say ("The fleet entry names the install folder {0}, but this connector is installed in {1}. An upgrade normally stays where it is; use -ForceReinstall to move it." -f $wantRoot, $before.InstallRoot) 'WARN' }
+}
+
 # The installer removes the keytab. Keep a copy of a usable one first.
 $ktCopy = $null
 if (('KerberosAuthService' -in @($job.Services)) -and -not $job.DryRun) {
@@ -1355,6 +1396,12 @@ if ($job.ServiceAccount)   { $splat.ServiceAccount = $job.ServiceAccount; if ($S
 if ($job.Syslog)           { $splat.SyslogHost = $job.Syslog }
 if ($job.InstallerVersion) { $splat.InstallerVersion = $job.InstallerVersion }
 if ($job.ForceReinstall)   { $splat.ForceReinstall = $true }
+# installer settings from the fleet file
+if ($job.InstallDir)       { $splat.InstallDir = [string]$job.InstallDir }
+if ($job.EnableFips)       { $splat.EnableFips = $true }
+foreach ($k in 'DirectorySyncPort','UserAuthPort','KerberosAuthPort','VirtualAppPort','ProxyPort') { if ($job.$k) { $splat[$k] = [int]$job.$k } }
+foreach ($k in 'ProxyHost','ProxyUser','NonProxyHosts') { if ($job.$k) { $splat[$k] = [string]$job.$k } }
+if ($needProxy)            { $splat.ProxyPassword = $ProxyPassword }
 if ($job.DryRun)           { $splat.DryRun = $true }
 # A silent install may otherwise restart the server by itself when Windows Installer wants a reboot.
 $splat.ExtraMsiProperties = 'REBOOT=ReallySuppress'

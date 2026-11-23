@@ -32,7 +32,7 @@ Connectors inside a tenant are done one at a time. A tenant with two or more con
 
 | Item | Detail |
 |---|---|
-| Admin machine | macOS, Linux or Windows with PowerShell 7 (`pwsh`). WinRM mode needs Windows. |
+| Admin machine | macOS, Linux or Windows with PowerShell 7 or later (`pwsh`). The tool will not start under Windows PowerShell 5.1. WinRM mode needs Windows. |
 | Reach to the connectors | SSH with key sign-in (port 22), or PowerShell remoting (WinRM, ports 5985/5986) |
 | Connector installer | The Omnissa Access Connector installer `.exe` for the version you want |
 | Tenant configuration file | The `es-config.json` from the Access console, and its password |
@@ -234,6 +234,7 @@ In `FleetDeploy`, copy `fleet.example.psd1` to `fleet.psd1` and edit it. Each en
 | `Pfx` | Kerberos Auth only. Leave it out when Kerberos Auth is not installed. |
 | `ServiceAccount` | Needed when Kerberos Auth or Virtual App is installed. |
 | `Syslog`, `TrustStore` | Optional. |
+| `InstallDir`, `EnableFips`, the four `...Port` settings, `ProxyHost`, `ProxyPort`, `ProxyUser`, `NonProxyHosts` | Optional installer settings: install folder, FIPS mode, service ports, outbound proxy. Leave them out for the installer defaults. With `ProxyUser` the proxy password is asked at run time. See `docs/Fleet-File-Reference.md`. |
 | `Connectors` | The servers, in the order they are done. |
 
 To move to a different connector version later, put the new installer in `Installers` and change `Installer` (and `ExpectVersionPrefix`). Nothing else in the tool is tied to a version. The full list of settings is in `docs/Fleet-File-Reference.md`.
@@ -287,6 +288,7 @@ pwsh ./Invoke-AccessConnectorUpgrade.ps1 -Tenant TENANT1 -DryRun
 | Kerberos PFX password | When the tenant has a `Pfx` |
 | Service account password | When the tenant installs Kerberos Auth or Virtual App |
 | Domain admin account and password | Kerberos Auth tenants in SSH mode; every tenant in WinRM mode |
+| Proxy password | When the tenant has `ProxyUser` |
 
 Typing is hidden. Passwords are never written to the fleet file, a command line of this tool, or its logs.
 

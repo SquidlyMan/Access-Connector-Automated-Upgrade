@@ -38,7 +38,7 @@ The tool installs what you give it. It does not check compatibility with the Acc
 | Trusted CA certificates | Yes (`TrustStore`) |
 | Kerberos certificate | Yes (`Pfx`), and put back after an upgrade |
 | Syslog target | Yes (`Syslog`) |
-| Outbound proxy, custom ports, install folder, FIPS mode | Not yet. The wrapper has parameters for them but the fleet file does not pass them through. See the Roadmap. |
+| Outbound proxy, custom ports, install folder, FIPS mode | Yes, since 1.4.0 (`ProxyHost` and the rest; see the Fleet File Reference). Not yet proven by a real run. |
 | Java memory or other hand edits to service files | No. Reapply by hand after an upgrade. |
 
 ## 2. Choose the route per environment
