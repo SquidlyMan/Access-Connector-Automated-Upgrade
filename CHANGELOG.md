@@ -7,6 +7,7 @@ Versions are those of `Invoke-AccessConnectorUpgrade.ps1` and `Invoke-ConnectorU
 - **A dry run always runs the pre-flight checks.** Before, on a connector already on the installer's version, the wrapper decided to skip before its checks and the dry run reported `DryRunPassed` without testing any password. Now the PFX, configuration file and service account checks run every time.
 - The dry run says what a real run would do: a connector a real run would skip gets `DryRunPassed` with the note "A real run would SKIP this connector..." on screen, in the summary and in the CSV message; one a real run would refuse (installed version newer than the installer) gets `DryRunFailed` with the reason, after the checks.
 - Help text of the orchestrator (`-DryRun`) and the wrapper updated to match.
+- Getting Started: the tool's full legal disclaimer at the top and bottom (red in the Word and PDF guides, a Caution box on GitHub); why SSH key sign-in is used and how it is secured and made seamless; what is not available over WinRM without SSH; connector servers need only Windows PowerShell 5.1.
 
 ## 1.4.0 - 2026-11-22
 

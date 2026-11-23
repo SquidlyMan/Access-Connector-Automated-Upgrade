@@ -94,18 +94,27 @@ def no_split(row):
     trpr.append(OxmlElement('w:cantSplit'))
 
 
-def add_field(paragraph, instr):
-    run = paragraph.add_run()
-    for kind, text in (('begin', None), (None, instr), ('end', None)):
-        if kind:
-            el = OxmlElement('w:fldChar')
-            el.set(qn('w:fldCharType'), kind)
-        else:
+def add_field(paragraph, instr, style=None):
+    # A complete field (begin, instruction, separate, result, end), each part in its own run and
+    # each formatted by style(run), so every viewer shows the result in the same colour and font.
+    runs = []
+    for kind, text in (('begin', None), ('instr', instr), ('separate', None), ('result', '1'), ('end', None)):
+        run = paragraph.add_run()
+        if kind == 'result':
+            run.text = text
+        elif kind == 'instr':
             el = OxmlElement('w:instrText')
             el.set(qn('xml:space'), 'preserve')
             el.text = text
-        run._r.append(el)
-    return run
+            run._r.append(el)
+        else:
+            el = OxmlElement('w:fldChar')
+            el.set(qn('w:fldCharType'), kind)
+            run._r.append(el)
+        if style:
+            style(run)
+        runs.append(run)
+    return runs[-1]
 
 
 def set_font(run, name, size=None, bold=None, color=None, italic=None):
@@ -205,6 +214,24 @@ def add_callout(doc, text):
     return p
 
 
+RED = RGBColor(0xC0, 0x00, 0x00)
+
+
+def add_disclaimer(doc, paras):
+    # The tool's legal disclaimer: a white-on-red title bar, as in -Help, then the text in red.
+    title, body = paras[0], paras[1:]
+    p = doc.add_paragraph()
+    set_font(p.add_run(' ' + title.strip('*').strip() + ' '), BODY_FONT, 10.5, True, RGBColor(0xFF, 0xFF, 0xFF))
+    shade(p, 'C00000')
+    spacing(p, before=10, after=4, line=1.0, keep_next=True)
+    for i, t in enumerate(body):
+        q = doc.add_paragraph()
+        add_inline(q, t, size=9.5, color=RED)
+        border(q, 'left', 'C00000', size=24, space=8)
+        q.paragraph_format.left_indent = Inches(0.15)
+        spacing(q, after=4 if i < len(body) - 1 else 12, line=1.1, keep_next=(i < len(body) - 1), keep_lines=True)
+
+
 def add_code(doc, lines):
     last = len(lines) - 1
     for i, line in enumerate(lines):
@@ -270,6 +297,27 @@ def parse(md):
     while i < n:
         line = lines[i]
         if not line.strip():
+            i += 1
+            continue
+        if line.strip() == '<!-- disclaimer -->':
+            # > [!CAUTION] block between the markers: one paragraph per blank '>' line
+            i += 1
+            paras, cur = [], []
+            while i < n and lines[i].strip() != '<!-- /disclaimer -->':
+                t = lines[i].lstrip('>').strip()
+                if t == '[!CAUTION]':
+                    pass
+                elif t:
+                    cur.append(t)
+                elif cur:
+                    paras.append(' '.join(cur)); cur = []
+                i += 1
+            if cur:
+                paras.append(' '.join(cur))
+            i += 1
+            yield ('disclaimer', paras)
+            continue
+        if line.startswith('<!--'):
             i += 1
             continue
         if line.startswith('```'):
@@ -348,7 +396,7 @@ def build():
     fp.paragraph_format.tab_stops.add_tab_stop(Inches(PAGE_WIDTH_IN), WD_ALIGN_PARAGRAPH.RIGHT)
     set_font(fp.add_run('Access Connector Automated Upgrade  |  Getting Started  |  v%s\t' % version), BODY_FONT, 8.5, False, GREY)
     set_font(fp.add_run('Page '), BODY_FONT, 8.5, False, GREY)
-    set_font(add_field(fp, 'PAGE'), BODY_FONT, 8.5, False, GREY)
+    add_field(fp, 'PAGE', lambda r: set_font(r, BODY_FONT, 8.5, False, GREY))
 
     blocks = list(parse(open(SRC, encoding='utf-8').read()))
     sections = [b[1] for b in blocks if b[0] == 'h2']
@@ -390,6 +438,8 @@ def build():
             add_step(doc, data[0], data[1])
         elif kind == 'callout':
             add_callout(doc, data)
+        elif kind == 'disclaimer':
+            add_disclaimer(doc, data)
         elif kind == 'code':
             add_code(doc, data)
         elif kind == 'table':

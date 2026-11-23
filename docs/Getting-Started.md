@@ -4,7 +4,22 @@ Access Connector Automated Upgrade installs, upgrades and repairs Omnissa Access
 
 This guide takes you from nothing to a first upgrade in any environment. It covers the two ways the tool can reach a connector (SSH and WinRM), how to stand up SSH on a Windows server, clean installs on new servers, and how to choose which connector services are installed.
 
-> **Unsupported.** This tool is not an Omnissa product and is not covered by Omnissa support. It is provided "as is", with no warranty. Test it in a lab before you use it on production connectors. The full disclaimer is shown by `-Help`.
+<!-- disclaimer -->
+> [!CAUTION]
+> **LEGAL DISCLAIMER - UNSUPPORTED, USE AT YOUR OWN RISK**
+>
+> This script is an UNSUPPORTED utility. It is NOT an Omnissa product or offering, and it is not covered by any Omnissa support, maintenance, or service-level agreement.
+>
+> It is provided "AS IS" and "AS AVAILABLE", WITHOUT WARRANTY OF ANY KIND, express or implied, including but not limited to the implied warranties of merchantability, fitness for a particular purpose, title, and non-infringement.
+>
+> YOU USE IT ENTIRELY AT YOUR OWN RISK. You are solely responsible for validating its behaviour, for safeguarding the credentials you supply to it, and for any effect it has on your environment or data.
+>
+> TO THE MAXIMUM EXTENT PERMITTED BY LAW, NEITHER OMNISSA NOR THE AUTHOR SHALL BE LIABLE FOR ANY CLAIM, LOSS, OR DAMAGES WHATSOEVER - direct, indirect, incidental, special, exemplary, or consequential (including loss of data, revenue, or profits) - arising from or in connection with the use of, or inability to use, this script.
+>
+> Use of the Omnissa products is governed by your agreement with Omnissa; customers assume all responsibility for automated changes to them.
+<!-- /disclaimer -->
+
+Test the tool in a lab before you use it on production connectors. Each script also shows this disclaimer with `-Help`.
 
 ## 1. What the tool does
 
@@ -543,3 +558,18 @@ More cases are in `docs/Troubleshooting.md`.
 | `docs/Engineering-Notes.md` | What was learned about the vendor installer |
 | `docs/Validation-Record.md` | What has been proven in testing, and what has not |
 | `CHANGELOG.md`, `ROADMAP.md` | History and what is planned |
+
+<!-- disclaimer -->
+> [!CAUTION]
+> **LEGAL DISCLAIMER - UNSUPPORTED, USE AT YOUR OWN RISK**
+>
+> This script is an UNSUPPORTED utility. It is NOT an Omnissa product or offering, and it is not covered by any Omnissa support, maintenance, or service-level agreement.
+>
+> It is provided "AS IS" and "AS AVAILABLE", WITHOUT WARRANTY OF ANY KIND, express or implied, including but not limited to the implied warranties of merchantability, fitness for a particular purpose, title, and non-infringement.
+>
+> YOU USE IT ENTIRELY AT YOUR OWN RISK. You are solely responsible for validating its behaviour, for safeguarding the credentials you supply to it, and for any effect it has on your environment or data.
+>
+> TO THE MAXIMUM EXTENT PERMITTED BY LAW, NEITHER OMNISSA NOR THE AUTHOR SHALL BE LIABLE FOR ANY CLAIM, LOSS, OR DAMAGES WHATSOEVER - direct, indirect, incidental, special, exemplary, or consequential (including loss of data, revenue, or profits) - arising from or in connection with the use of, or inability to use, this script.
+>
+> Use of the Omnissa products is governed by your agreement with Omnissa; customers assume all responsibility for automated changes to them.
+<!-- /disclaimer -->
