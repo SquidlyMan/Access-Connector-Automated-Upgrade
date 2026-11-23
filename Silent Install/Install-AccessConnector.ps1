@@ -1166,7 +1166,7 @@ try {
             Write-Audit -Level WARN -Message "DRY RUN note: $realRunNote"
             $exitCode = 1
         } elseif ($preflightOk) {
-            Write-Audit -Level OK -Message "DRY RUN complete - pre-flight passed. Planned action: $installAction. Installer NOT executed; services not touched."
+            Write-Audit -Level OK -Message "DRY RUN complete - pre-flight passed. Planned action: $($installAction.TrimEnd('.')). Installer NOT executed; services not touched."
             if ($realRunNote) { Write-Audit -Level WARN -Message "DRY RUN note: $realRunNote" }
             $exitCode = 0
         } else {

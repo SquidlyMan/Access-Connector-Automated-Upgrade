@@ -1414,8 +1414,6 @@ $global:LASTEXITCODE = $null
 $script:RealRunNote = ''
 try {
     & $installScript @splat 2>&1 | ForEach-Object {
-        # the wrapper's dry run says when a real run would skip or refuse this connector
-        if ([string]$_ -match 'DRY RUN note: (.+)$') { $script:RealRunNote = $Matches[1].Trim() }
         $relayStyle = $script:ui.Text; if ($_ -is [System.Management.Automation.ErrorRecord]) { $relayStyle = $script:ui.Warn }
         Write-Host ($relayStyle + (Protect-Text ([string]$_)) + $script:ui.Reset) }
     $result.InstallerExit = $LASTEXITCODE
@@ -1445,6 +1443,16 @@ if (-not $installOk -and -not $job.DryRun -and $job.ExpectVersionPrefix) {
 }
 
 if ($job.DryRun) {
+    # The wrapper's dry run says when a real run would skip or refuse this connector. Its lines go
+    # to the console with Write-Host, which the pipe above does not receive under Windows
+    # PowerShell 5.1, so read the note from the wrapper's own audit log of this run.
+    try {
+        $wal = @(Get-ChildItem -LiteralPath $logDir -Filter 'AccessConnector_Audit_*.log' -File -ErrorAction Stop | Where-Object { $_.LastWriteTime -ge $installStarted } | Sort-Object LastWriteTime)
+        if ($wal.Count) {
+            $hit = @(Select-String -LiteralPath $wal[$wal.Count - 1].FullName -Pattern 'DRY RUN note: (.+)$') | Select-Object -Last 1
+            if ($hit) { $script:RealRunNote = $hit.Matches[0].Groups[1].Value.Trim() }
+        }
+    } catch { }
     if ($installOk) { $result.Status = 'DryRunPassed'; if ($script:RealRunNote) { $result.Message = $script:RealRunNote } } else { $result.Status = 'DryRunFailed'; $result.Message = "pre-flight exit $($result.InstallerExit)" + $(if ($script:RealRunNote) { '; ' + $script:RealRunNote } else { '' }) }
     $result.After = Get-ConnectorState
     Write-Result -Result ([pscustomobject]$result) -LogDir $logDir
