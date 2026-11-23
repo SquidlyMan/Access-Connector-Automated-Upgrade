@@ -1,6 +1,6 @@
 # Roadmap
 
-Known gaps and planned work, most useful first. Each is tracked as an issue on the repository.
+Known gaps and planned work, most useful first. The three items under Next are tracked as issues 1 to 3 on the repository.
 
 ## Next
 
