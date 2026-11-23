@@ -1,23 +1,14 @@
 # Roadmap
 
-Known gaps and planned work, most useful first. The three items under Next are tracked as issues 1 to 3 on the repository.
+Known gaps and planned work, most useful first. Items 2 and 3 under Next are tracked as issues 2 and 3 on the repository.
 
 ## Next
 
-### 1. Service selection per connector and on the command line
+### 1. Service selection for a connector or group of connectors (done)
 
-Today `Services` is set per tenant entry in the fleet file. Clean installs and service selection both work, but:
+Services are chosen per connector group (one fleet entry), and a group can hold a single connector. This is documented in Getting Started section 11 and in the Fleet File Reference. Issue 1 is closed.
 
-- every connector in an entry gets the same services; different services inside one Access tenant need two entries that share a `ConfigFile`;
-- there is no command-line switch to choose services for one run;
-- changing the services on an installed connector needs `-ForceReinstall`, and the tool does not warn when `Services` differs from what is installed.
-
-Planned:
-
-- `Services` (and `Pfx`) allowed on a connector entry, overriding the tenant entry;
-- a `-Services` switch for a single run;
-- Verify and the plan show installed services against wanted services, and say when a forced reinstall is needed to get there;
-- a reminder to disable the connector's Active Directory account when Kerberos Auth is removed.
+Small follow-ups, not scheduled: have Verify and the plan show installed services against wanted services and say when a forced reinstall is needed; print a reminder to disable the connector's Active Directory account when Kerberos Auth is removed.
 
 ### 2. Carry the remaining installer settings through the fleet file
 

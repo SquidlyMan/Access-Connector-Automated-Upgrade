@@ -29,11 +29,32 @@ This lets one shared folder serve several admin machines or domains: give each i
 
 All relative paths use the staging root. Backslashes are fine on every platform.
 
+## Tenant entries are connector groups
+
+Each entry in `Tenants` is a **connector group**: a set of connectors that get the same installer, configuration file, services and certificate. The list is called `Tenants` because the usual case is one group per Access tenant, but an Access tenant can have as many groups as you need, and a group can hold a single connector.
+
+| You want | Fleet file |
+|---|---|
+| The same services on every connector of a tenant | One entry listing all of them |
+| A few connectors with different services | A second entry with the same `ConfigFile`, its own `Name` and `Services`, listing those connectors |
+| One connector with different services | An entry of its own, with that one connector in `Connectors` |
+| To act on one server without changing any of this | `-Connector <host>` on the command line. It limits the run; the services still come from the server's entry. |
+
+Rules:
+
+- `Name` must be different for every entry. It is what `-Tenant` selects.
+- List each connector in one entry only.
+- Entries of the same Access tenant use the same `ConfigFile`. An entry with Kerberos Auth also needs `Pfx` and `ServiceAccount`; one without it should leave `Pfx` out.
+- Entries run top to bottom and connectors one at a time inside each, so a plain run never has two connectors down together. `-ParallelTenants` runs entries side by side, including two entries of the same Access tenant.
+- To change the services on an installed connector, put it in an entry with the services you want and run with `-ForceReinstall`.
+
+A worked example is in Getting Started, section 11.
+
 ## Tenant entry settings
 
 | Setting | Required | Meaning |
 |---|---|---|
-| `Name` | Yes | Your label for this group of connectors. Used with `-Tenant`, on screen and in log names. Need not match the Access tenant name. |
+| `Name` | Yes | Your label for this connector group. Must be unique in the file. Used with `-Tenant`, on screen and in log names. Need not match the Access tenant name. |
 | `Installer` | Yes | The connector installer to run. This sets the version that is installed. |
 | `InstallerVersion` | No | The version of that installer, for example `'26.10.0.0'`. Passed to the wrapper's version gate. When left out, the wrapper reads the version from the installer's file name or file properties. |
 | `ExpectVersionPrefix` | No | Health check: the run is `Unhealthy` unless the installed version starts with this, for example `'26.10'`. |
@@ -57,7 +78,7 @@ All relative paths use the staging root. Backslashes are fine on every platform.
 
 - **Order matters.** Tenants run top to bottom and connectors top to bottom. Put the connector you can best afford to lose first.
 - **Two connectors per tenant** means one stays online during the run.
-- **Different services inside one Access tenant:** make two entries with the same `ConfigFile` and different `Name` and `Services`.
+- **Different services for one connector or a few:** give them an entry of their own with the same `ConfigFile` and a different `Name` and `Services`. See "Tenant entries are connector groups" above.
 - **A new connector version:** add the installer, change `Installer`, `InstallerVersion` and `ExpectVersionPrefix`. Nothing else changes.
 - **Several domains or shares:** one fleet file per domain (`fleet.<domain>.psd1`), each in the copy of the staging folder that holds that domain's files, and list the copies under `StagingFolders`.
 

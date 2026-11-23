@@ -11,6 +11,7 @@ Help text only. No change to what the scripts do.
 - `Install-AccessConnector.ps1`: two example lines changed to example names.
 - New generic `fleet.example.psd1` for the current fleet-file layout.
 - First release in this repository, with full documentation.
+- Documentation: how to choose services for a single connector or a group of connectors (one fleet entry per connector group).
 
 ## 1.3.0 - 2026-11-22
 

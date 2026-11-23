@@ -11,7 +11,7 @@ The tool is not tied to a connector version. It installs whichever installer fil
 - **Upgrades** existing connectors to the version of the installer you name.
 - **Clean installs** a connector on a server that has none, with the same command.
 - **Reinstalls** at the same version with `-ForceReinstall` (uninstall, then fresh install).
-- **Installs the services you choose** per tenant entry: Directory Sync, User Auth, Kerberos Auth, Virtual App.
+- **Installs the services you choose**, for a single connector or a group of connectors: Directory Sync, User Auth, Kerberos Auth, Virtual App.
 - **Keeps tenants online**: connectors in a tenant are done one at a time, and the run stops if one does not come back healthy.
 - **Reaches connectors over SSH or WinRM**, from macOS, Linux or Windows.
 - **Handles Kerberos Auth properly**: runs the install under a domain admin account so the keytab is rebuilt, checks the keytab, and puts your PFX certificate back after an upgrade (the vendor installer replaces it with a self-signed one).

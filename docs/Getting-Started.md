@@ -22,7 +22,7 @@ Connectors inside a tenant are done one at a time. A tenant with two or more con
 | Upgrade existing connectors | Point the fleet file at the new installer and run the tool |
 | Clean install on a new server | Same command; a server with no connector gets a fresh install |
 | Same-version clean reinstall | Add `-ForceReinstall` (uninstalls, then installs fresh) |
-| Choose the services | `Services` in the fleet file, per tenant entry |
+| Choose the services | `Services` in the fleet file, per connector or group of connectors |
 | See the state, change nothing | `-Mode Verify` |
 | Rehearse without installing | `-DryRun` |
 | Fix an empty Kerberos keytab | `-Mode RepairKeytab` |
@@ -204,7 +204,7 @@ No passwords go in any file. They are asked for at hidden prompts when you run t
 
 ## 7. Write the fleet file
 
-In `FleetDeploy`, copy `fleet.example.psd1` to `fleet.psd1` and edit it. One entry per tenant:
+In `FleetDeploy`, copy `fleet.example.psd1` to `fleet.psd1` and edit it. Each entry describes one connector group: usually all the connectors of a tenant, but see section 11 for giving one connector or a few of them different services.
 
 ```
 @{
@@ -226,7 +226,7 @@ In `FleetDeploy`, copy `fleet.example.psd1` to `fleet.psd1` and edit it. One ent
 
 | Setting | Meaning |
 |---|---|
-| `Name` | Your label for this group of connectors. Used with `-Tenant`. |
+| `Name` | Your label for this connector group. Used with `-Tenant`. |
 | `Installer` | The installer to run. This is what sets the version. |
 | `ExpectVersionPrefix` | Optional. The run fails its health check unless the installed version starts with this. |
 | `ConfigFile` | The tenant's `es-config.json`. |
@@ -329,7 +329,9 @@ To wipe and reinstall a connector that is already on the version you want, add `
 
 ## 11. Choose which services are installed
 
-Set `Services` in the tenant's fleet entry. Use any combination of these four names, separated by commas:
+Services are chosen per **connector group**. A connector group is one entry in the fleet file's `Tenants` list: a `Name`, the settings for those connectors, and the list of connectors they apply to. A group can hold one connector or many.
+
+Set `Services` in the group's entry. Use any combination of these four names, separated by commas:
 
 | Name | Service |
 |---|---|
@@ -338,21 +340,86 @@ Set `Services` in the tenant's fleet entry. Use any combination of these four na
 | `KerberosAuthService` | Kerberos Auth (needs `Pfx`, `ServiceAccount` and a domain admin at run time) |
 | `VirtualAppService` | Virtual App (needs `ServiceAccount`) |
 
-The setting applies to every connector in that entry. When connectors of one Access tenant need different services, make two entries that share the same `ConfigFile` and give each its own `Name`:
+### 11.1 The same services on every connector of a tenant
+
+One group for the tenant. This is the usual case, and the example in section 7.
+
+### 11.2 Different services for a group of connectors
+
+Make one group per set of services. Groups that belong to the same Access tenant share the same `ConfigFile`; each group needs its own `Name`.
 
 ```
-@{ Name = 'TENANT1-KERB'; ConfigFile = 'Configs\tenant1-es-config.json'
-   Services = 'DirectorySyncService,UserAuthService,KerberosAuthService'
-   ...
-   Connectors = @( @{ Host = 'connector1.example.local' } ) }
+@{
+  Name       = 'TENANT1-KERB'
+  ConfigFile = 'Configs\tenant1-es-config.json'
+  Services   = 'DirectorySyncService,UserAuthService,KerberosAuthService'
+  Pfx        = 'ChildCerts\connector.example.local.pfx'
+  # ... Installer, ServiceAccount and the other settings ...
+  Connectors = @(
+    @{ Host = 'connector1.example.local' }
+    @{ Host = 'connector2.example.local' }
+  )
+}
 
-@{ Name = 'TENANT1-SYNC'; ConfigFile = 'Configs\tenant1-es-config.json'
-   Services = 'DirectorySyncService,UserAuthService'
-   ...
-   Connectors = @( @{ Host = 'connector3.example.local' } ) }
+@{
+  Name       = 'TENANT1-SYNC'
+  ConfigFile = 'Configs\tenant1-es-config.json'
+  Services   = 'DirectorySyncService,UserAuthService'
+  # ... Installer and the other settings; no Pfx, no ServiceAccount ...
+  Connectors = @(
+    @{ Host = 'connector3.example.local' }
+    @{ Host = 'connector4.example.local' }
+  )
+}
 ```
 
-To change the services on a connector that is already installed, change `Services` and run with `-ForceReinstall`. The vendor installer cannot add or remove a service silently on an installed connector, so a clean reinstall is the supported automated route.
+Run a group by its name:
+
+```
+./Invoke-AccessConnectorUpgrade.ps1 -Tenant TENANT1-SYNC -DryRun
+./Invoke-AccessConnectorUpgrade.ps1 -Tenant TENANT1-SYNC
+```
+
+### 11.3 Different services for a single connector
+
+The same thing with one connector in the group:
+
+```
+@{
+  Name       = 'TENANT1-CONN5'
+  ConfigFile = 'Configs\tenant1-es-config.json'
+  Services   = 'DirectorySyncService'
+  # ... Installer and the other settings ...
+  Connectors = @( @{ Host = 'connector5.example.local' } )
+}
+```
+
+List each connector in one group only.
+
+`-Connector` is different: it limits a run to the servers you name, but each server still gets the services of the group it is listed in.
+
+```
+./Invoke-AccessConnectorUpgrade.ps1 -Tenant TENANT1-KERB `
+    -Connector connector2.example.local
+```
+
+### 11.4 Things to know about groups
+
+- Connectors are done one at a time inside a group, and groups run one after another. So a plain run never has two connectors down at once, even when two groups belong to the same Access tenant.
+- `-ParallelTenants` runs groups side by side. Do not use it across two groups of the same Access tenant unless you accept one connector from each being down together.
+- A run that names no group (`-Tenant` left out) does every group in the fleet file, top to bottom.
+- `-Mode RepairKeytab` and `-Mode RepairCertificate` leave out groups that do not install Kerberos Auth, and say so.
+
+### 11.5 Change the services on a connector that is already installed
+
+Move the connector to a group with the services you want (or change that group's `Services`), then run with `-ForceReinstall`:
+
+```
+./Invoke-AccessConnectorUpgrade.ps1 -Tenant TENANT1-SYNC -ForceReinstall `
+    -Connector connector3.example.local
+```
+
+The tool uninstalls the connector and installs it fresh with the new set. The vendor installer cannot add or remove a service silently on an installed connector, so a clean reinstall is the supported automated route. If you removed Kerberos Auth, disable the Active Directory user account named after that connector afterwards; the vendor set-up created it.
 
 ## 12. After the run
 

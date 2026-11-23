@@ -29,8 +29,14 @@
     # for connector 26.05 and 26.10). Leave it out for versions that do not need it.
     JavaPatchDir   = 'Installers\Java4shellPatch'
 
-    # Tenants run top to bottom; connectors inside a tenant run one at a time, in the
-    # order listed, so a tenant with two or more connectors keeps one online.
+    # Each entry below is a CONNECTOR GROUP: connectors that get the same installer,
+    # configuration file, services and certificate. Usually that is every connector of
+    # a tenant. To give one connector, or a few, different services, put them in an
+    # entry of their own with the same ConfigFile and a different Name and Services.
+    # List each connector in one entry only.
+    #
+    # Entries run top to bottom; connectors inside an entry run one at a time, in the
+    # order listed, so an entry with two or more connectors keeps one online.
     Tenants = @(
         @{
             # A tenant whose connectors run all four services, including Kerberos Auth.
@@ -52,9 +58,9 @@
         }
 
         @{
-            # A tenant whose connectors run three services and no Kerberos: no Pfx.
-            # Two entries may share one ConfigFile when connectors of the same Access
-            # tenant need different services; give each entry its own Name.
+            # A group whose connectors run three services and no Kerberos: no Pfx.
+            # For a single connector with its own services, list just that one
+            # connector under Connectors.
             Name                = 'TENANT2'
             Installer           = 'Installers\Access-Connector-Installer.exe'
             InstallerVersion    = '26.10.0.0'

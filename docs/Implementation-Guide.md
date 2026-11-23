@@ -12,7 +12,7 @@ For each connector write down:
 |---|---|
 | Server name and domain | Goes in `Connectors` |
 | Which Access tenant it belongs to | Decides the `ConfigFile` |
-| Which services it runs | Decides `Services`; connectors with different services need separate entries |
+| Which services it runs | Decides `Services`. Connectors with different services go in separate fleet entries (connector groups), even when they belong to the same tenant. |
 | Whether Kerberos Auth is really in use there | If not, do not install it. Kerberos Auth brings a certificate, a keytab and an Active Directory account to look after. |
 | Service account | `ServiceAccount` |
 | Current version | `-Mode Verify` will tell you |
@@ -114,7 +114,7 @@ Allow about ten minutes per connector. In testing each connector took between ni
 
 | Switch | Effect |
 |---|---|
-| `-ParallelTenants` | Tenants run side by side, one connector at a time in each. Each multi-connector tenant still keeps one online. |
+| `-ParallelTenants` | Fleet entries run side by side, one connector at a time in each. Each multi-connector entry still keeps one online. If an Access tenant is split over two entries (connector groups with different services), one connector from each can be down together. |
 | `-Parallel` | Everything at once. Every tenant is offline until its connectors finish and a failure cannot stop the others. For labs and for single-connector tenants. |
 
 Neither has been through a real run yet (see the Validation Record).

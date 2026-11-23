@@ -29,8 +29,8 @@ pwsh ./Invoke-AccessConnectorUpgrade.ps1 [-Mode <mode>] [-Tenant <names>] [-Conn
 |---|---|
 | `-FleetConfig <path>` | Fleet file by full path. Overrides the automatic choice. |
 | `-Fleet <name>` | Use `fleet.<name>.psd1` beside the script. |
-| `-Tenant <names>` | Only these tenant entries. Comma-separated. Fleet order is kept. |
-| `-Connector <hosts>` | Only these connector hosts. Comma-separated. |
+| `-Tenant <names>` | Only these fleet entries (connector groups), by `Name`. Comma-separated. Fleet order is kept. |
+| `-Connector <hosts>` | Only these connector hosts. Comma-separated. Each still gets the settings of the entry it is listed in. |
 
 With neither `-FleetConfig` nor `-Fleet`, the first of these that exists beside the script is used: `fleet.<this computer name>.psd1`, `fleet.<this computer domain>.psd1`, `fleet.psd1`. The plan shown before any change names the file in use and why.
 
