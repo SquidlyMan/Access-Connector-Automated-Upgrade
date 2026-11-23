@@ -32,7 +32,7 @@ Connectors inside a tenant are done one at a time. A tenant with two or more con
 
 | Item | Detail |
 |---|---|
-| Admin machine | macOS, Linux or Windows with PowerShell 7 or later (`pwsh`). The tool will not start under Windows PowerShell 5.1. WinRM mode needs Windows. |
+| Admin machine | macOS, Linux or Windows with PowerShell 7 or later (`pwsh`). The tool will not start under Windows PowerShell 5.1. WinRM mode needs a Windows admin machine. The connector servers themselves need only the Windows PowerShell 5.1 that Windows Server includes, over WinRM or SSH. If you use a connector server as the admin machine, install PowerShell 7 on it as well. |
 | Reach to the connectors | SSH with key sign-in (port 22), or PowerShell remoting (WinRM, ports 5985/5986) |
 | Connector installer | The Omnissa Access Connector installer `.exe` for the version you want |
 | Tenant configuration file | The `es-config.json` from the Access console, and its password |
