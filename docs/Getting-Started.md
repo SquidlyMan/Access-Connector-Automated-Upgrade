@@ -58,7 +58,38 @@ The connectors themselves need only what the Omnissa installer needs, plus Windo
 
 ## 4. Stand up SSH on a Windows server
 
-Do this once on each connector. It takes about five minutes. Run the commands in an elevated Windows PowerShell window on the connector.
+### Why SSH, and why a key
+
+SSH is the route that works from any admin machine (macOS, Linux or Windows) and the only one that offers every mode: upgrades, clean installs, `-Mode Verify`, `-Mode Stage` and both repair modes. It also brings each connector's logs back to one folder. OpenSSH Server is part of Windows Server, so nothing from outside Microsoft is installed on the connectors.
+
+The tool signs in to the connectors with an **SSH key**, never with a password. A key pair has two halves:
+
+- The **private key** stays on your admin machine and never leaves it.
+- The **public key** is copied to each connector. It is not secret: it can only check a sign-in, not make one.
+
+When the tool connects, the connector checks that the admin machine holds the private key that matches. Nothing that could be replayed crosses the network, and no password is typed, stored or sent for the SSH sign-in. The passwords the installer needs (configuration file, PFX, service account) are a separate matter; the tool asks for those at hidden prompts each run.
+
+### How it is made secure
+
+| Measure | What it protects against | Where |
+|---|---|---|
+| Key sign-in only, password sign-in turned off | Password guessing against the connector | 4.4, 4.5 |
+| The key file on the connector readable only by Administrators and SYSTEM | Someone adding their own key | 4.4 |
+| A passphrase on the private key | A copied key file being used by someone else | 4.3 |
+| Port 22 open only to your admin machines or management network | Connection attempts from anywhere else | 4.2 |
+| The tool never falls back to a password (`BatchMode`) | A run stopping at a prompt, or a password typed into the wrong place | Built in |
+| Each connector's host key is remembered on first contact and checked on every later one | Another machine answering in the connector's place | Built in; see the note in 4.6 |
+
+### How it is made seamless
+
+- **One key for every connector.** Generate it once (4.3) and authorise the same public key on each connector (4.4).
+- **An SSH agent holds the unlocked key.** You type the passphrase once per session (macOS can keep it in the Keychain), and every connection after that, including the dozens a run makes, signs in without a prompt.
+- **An SSH configuration entry names the key** (4.7), so you do not have to add `-SshKey` to every command.
+- **Many servers at once.** The four steps below are the same on every connector, so they can be pushed with Group Policy, your configuration tool or a one-off remoting loop instead of being typed on each server.
+
+### The steps
+
+Do this once on each connector. It takes about five minutes. Run the commands in an elevated Windows PowerShell window on the connector, except 4.3, 4.6 and 4.7, which run on the admin machine.
 
 ### 4.1 Install and start OpenSSH Server
 
@@ -97,7 +128,21 @@ On the admin machine (not the connector):
 ssh-keygen -t ed25519 -f ~/.ssh/connector_ed25519 -C "access-connector-upgrade"
 ```
 
-Give the key a passphrase and load it into your SSH agent, or leave the passphrase empty and protect the file. The tool never asks for an SSH password: if the key is refused, the run stops. Show the public half with:
+Give the key a passphrase when asked, and load it into your SSH agent so you type the passphrase once rather than on every connection:
+
+```
+# macOS: also keeps the passphrase in the Keychain
+ssh-add --apple-use-keychain ~/.ssh/connector_ed25519
+
+# Linux
+ssh-add ~/.ssh/connector_ed25519
+
+# Windows (elevated PowerShell, once): start the agent, then add the key
+Set-Service ssh-agent -StartupType Automatic; Start-Service ssh-agent
+ssh-add $HOME\.ssh\connector_ed25519
+```
+
+A key without a passphrase also works, but then the file itself is the only protection: anyone who can copy it can sign in to every connector. The tool never asks for an SSH password: if the key is refused, the run stops. Show the public half with:
 
 ```
 cat ~/.ssh/connector_ed25519.pub
@@ -138,6 +183,14 @@ ssh -i ~/.ssh/connector_ed25519 administrator@connector1.example.local hostname
 ```
 
 You should see the server name with no password prompt. If you are asked for a password, the key was not accepted: recheck step 4.4, especially the `icacls` line.
+
+**The host key.** The first time you connect, SSH shows the connector's host key fingerprint and asks whether to trust it. To be sure you are talking to the real server, compare it with the fingerprint shown on the connector itself:
+
+```
+ssh-keygen -lf C:\ProgramData\ssh\ssh_host_ed25519_key.pub
+```
+
+Answer `yes` only when they match. SSH then remembers the key and refuses the server if it ever changes. The tool accepts a host it has never seen without asking, so connecting once by hand like this before the first run is how every host key gets checked.
 
 ### 4.7 Tell SSH which key to use (optional)
 
