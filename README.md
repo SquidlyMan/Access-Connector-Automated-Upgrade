@@ -84,7 +84,7 @@ The repository is laid out as the staging folder the tool expects, so a clone is
 
 | Document | Contents |
 |---|---|
-| [Getting Started](docs/Getting-Started.md) ([Word](docs/Getting-Started.docx), [PDF](docs/Getting-Started.pdf)) | From nothing to a first upgrade: SSH or WinRM, SSH on Windows Server, fleet file (by hand, from a spreadsheet, or discovered from installed connectors), first run, clean installs, choosing services |
+| [Getting Started](docs/Getting-Started.md) ([Word](docs/Getting-Started.docx), [PDF](docs/Getting-Started.pdf)) | From nothing to a first upgrade: a quick start (what to have ready, then nine steps), SSH or WinRM, SSH on Windows Server, fleet file (by hand, from a spreadsheet, or discovered from installed connectors), first run, clean installs, choosing services; then 31 worked use cases for different networks, domains and kinds of deployment, and what the tool does not do |
 | [Implementation Guide](docs/Implementation-Guide.md) | Planning a roll-out, several domains or shares, change windows, scheduling, operations |
 | [Command Reference](docs/Command-Reference.md) | Every mode, parameter, status and output |
 | [Fleet File Reference](docs/Fleet-File-Reference.md) | Every fleet file setting; building the file from a spreadsheet; discovering existing connectors |
@@ -129,7 +129,7 @@ Needs `pwsh` and `python3`. It:
 
 - parses the three scripts and fails on non-ASCII bytes in any of them, and on PowerShell 7-only constructs (the ternary operator, `&&`, `||`, `??`, `??=`, `?.`, `?[]`) in the connector-side scripts. It finds the constructs by the syntax tree, so one inside a `"...$(...)..."` string is found too;
 - checks the help width, that the two versions match, and that `fleet.example.psd1` parses;
-- runs the three offline test suites, `tools/test_fleet_import.ps1` (57 cases), `tools/test_fleet_discover.ps1` (42) and `tools/test_fleet_e2e.ps1` (18), and prints any case that did not pass. On Windows the end-to-end suite is skipped as a whole, and so are the discovery suite's transport cases, because their stand-in for ssh is a shell script;
+- runs the three offline test suites, `tools/test_fleet_import.ps1` (57 cases), `tools/test_fleet_discover.ps1` (42) and `tools/test_fleet_e2e.ps1` (19), and prints any case that did not pass. On Windows the end-to-end suite is skipped as a whole, and so are the discovery suite's transport cases, because their stand-in for ssh is a shell script;
 - checks that the committed templates `fleet.example.csv` and `fleet.example.xlsx` are exactly what a fresh `python3 tools/build_fleet_template.py` makes, and dry-runs `-ImportFleet` on each.
 
 It ends with `ALL CHECKS PASSED` or `CHECKS FAILED`. It never contacts a connector, domain controller or share: the suites work in temporary folders with a stand-in for ssh, and remove those folders when they finish, as `check_scripts.sh` removes its own. The Validation Record says what each suite covers.

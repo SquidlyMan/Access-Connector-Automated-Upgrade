@@ -31,7 +31,7 @@ Things to know:
 
 **Observed.** The verbose MSI log (`AccessConnector_MSI_*.log`) has lines of the form `Adding AW... property. Its value is '...'` that carry the configuration, PFX and service account passwords base64-encoded, repeated about twenty times. Passwords also sit on the installer's command line while it runs (a documented limitation of the silent install).
 
-**What the tool does:** immediately after every install the helper replaces those values with asterisks in the logs on the connector, keeping each file's encoding and timestamp. The main script cleans the copies it brings back as well, and discards a copy it cannot check. Logs left by earlier manual installs are cleaned when the helper next runs.
+**What the tool does:** immediately after every install the helper replaces those values with asterisks in the logs on the connector, keeping each file's encoding and timestamp. The main script cleans the copies it brings back as well, and discards a copy it cannot check. Logs that earlier manual installs left in the helper's own `Logs` folder are cleaned when the helper next runs; an installer log kept anywhere else is not, so find and delete it.
 
 When reading an uncleaned MSI log, never print those lines.
 

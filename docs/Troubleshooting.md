@@ -125,7 +125,7 @@ Messages in `code` are quoted as the tool prints them, with `<...>` standing for
 
 | Message | Cause | Fix |
 |---|---|---|
-| `cannot reach <host> over SSH or create C:\ProgramData\AccessConnectorUpdate` | SSH sign-in failed, or the account is not an administrator | Test by hand: `ssh -i <key> <user>@<host> hostname`. Lines in red beginning `ssh (<host>):` give SSH's own reason. |
+| `cannot reach <host> over SSH or create C:\ProgramData\AccessConnectorUpdate` | SSH sign-in failed, or the account is not an administrator | This first step does not show SSH's own reason. Test by hand: `ssh -i <key> <user>@<host> hostname`, or run `-Mode Discover -Connector <host>`, which shows it. Red lines beginning `ssh (<host>):` come only from later steps. |
 | `Permission denied (publickey)` in the red lines | The key is not authorised on the connector | Add the public key to `C:\ProgramData\ssh\administrators_authorized_keys` and re-run the `icacls` command from Getting Started section 4.4 |
 | `Host key verification failed` | The server's host key changed since it was first seen (rebuilt server) | Confirm the rebuild, then remove the old entry: `ssh-keygen -R <host>` |
 | `scp to <host>:... failed` | Disk full on the connector, or the SFTP subsystem is disabled in `sshd_config` | Free space; make sure `Subsystem sftp sftp-server.exe` is present |

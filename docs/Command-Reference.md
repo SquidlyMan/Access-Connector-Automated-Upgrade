@@ -125,7 +125,7 @@ The same goes for `-ImportFleet` and `-Mode Discover`:
 | `DryRunPassed` | Pre-flight checks passed; nothing was installed. A message under it says when a real run would skip the connector. |
 | `DryRunFailed` | A pre-flight check failed, or a real run would refuse the connector (installed version newer than the installer); nothing was installed |
 | `Blocked` | Refused before any change; the message gives the reason |
-| `Failed` | The installer returned a failure code |
+| `Failed` | The install script ended with an error: the vendor installer failed, a check in a real run stopped it, an uninstall during `-ForceReinstall` failed, or a check after the install failed (the tool carries on past that, and reports `Unhealthy`, only when `ExpectVersionPrefix` is set and the install moved the connector onto that version). The message gives the exit code; `AccessConnector_Audit_*.log` says which. Services that were running before are started again |
 | `Unhealthy` | The install finished but a check afterwards did not pass |
 | `Skipped` | Not attempted because an earlier connector failed |
 | `Error` | The connector could not be reached, the task could not be started, or no result came back |
