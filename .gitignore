@@ -29,6 +29,9 @@ TrustedCerts/*
 *.keytab
 *password*.txt
 
+# Session handoff notes (name the site; local only)
+HANDOFF*.md
+
 # Backups and scratch copies
 *.bak
 *.bak-*

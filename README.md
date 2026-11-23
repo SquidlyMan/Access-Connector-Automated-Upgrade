@@ -103,6 +103,14 @@ Version 1.3.1. The tool has upgraded, clean installed and repaired connectors in
 pwsh ./FleetDeploy/Invoke-AccessConnectorUpgrade.ps1 -Help
 ```
 
+## Checking the scripts
+
+```bash
+sh tools/check_scripts.sh
+```
+
+Parses the three scripts, looks for PowerShell 7-only constructs and non-ASCII bytes in the connector-side scripts, checks the help width and that the two versions match. It never runs the scripts against anything.
+
 ## Rebuilding the Word and PDF guide
 
 `docs/Getting-Started.md` is the source. After editing it:

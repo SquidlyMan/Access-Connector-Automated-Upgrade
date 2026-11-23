@@ -49,7 +49,7 @@ Server and tenant names are left out of this record on purpose.
 | Connector versions other than those listed above | The code has no version-specific logic apart from the optional patch step, but no other version has been run |
 | A connector with a proxy, custom ports, a non-default install folder or FIPS mode | Not supported through the fleet file yet (see Roadmap). Certificate repair refuses FIPS mode and proxy-user configurations. |
 | An actual Kerberos sign-in by an end user after a certificate repair | The served certificate, health page and keytab were checked; a sign-in test is the operator's to do |
-| Version 1.3.1 | Help text only. The logic is identical to 1.3.0, confirmed by comparing the files. 1.3.1 itself has been parse-checked and its help rendered, not run against a connector. |
+| Version 1.3.1 | Help text only; the logic is identical to 1.3.0, confirmed by comparing the files. 1.3.1 has run `-Mode Verify` against all ten connectors from both staging copies (2026-11-22). Its install and repair modes have not been run again since 1.3.0. |
 
 ## Known weaknesses
 
