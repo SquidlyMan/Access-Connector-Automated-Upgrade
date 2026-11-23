@@ -1,6 +1,6 @@
 # Roadmap
 
-Known gaps and planned work, most useful first. Items 2 and 3 under Next are tracked as issues 2 and 3 on the repository.
+Known gaps and planned work, most useful first. Item 3 under Next is tracked as issue 3 on the repository.
 
 ## Next
 
@@ -10,13 +10,13 @@ Services are chosen per connector group (one fleet entry), and a group can hold 
 
 Small follow-ups, not scheduled: have Verify and the plan show installed services against wanted services and say when a forced reinstall is needed; print a reminder to disable the connector's Active Directory account when Kerberos Auth is removed.
 
-### 2. Carry the remaining installer settings through the fleet file
+### 2. Carry the remaining installer settings through the fleet file (done in 1.4.0)
 
-The wrapper already accepts proxy host, port, user and password, non-proxy hosts, custom service ports, install folder and FIPS mode. The fleet file and job do not pass them. Add them, with the proxy password asked at run time like the others.
+Install folder, FIPS mode, service ports and outbound proxy are fleet-file settings; the proxy password is asked at run time. Issue 2. Not yet proven by a real run (Validation Record).
 
 ### 3. Prove the unproven paths
 
-From the Validation Record: the certificate step inside a real upgrade, WinRM with Kerberos Auth connectors, `-Parallel`, `-ParallelTenants`, `-Schedule`, SSH modes from Windows and Linux admin machines, cmd.exe as the SSH default shell.
+From the Validation Record: the certificate step inside a real upgrade (needs the next connector release: a forced reinstall is a fresh install, where the installer keeps the PFX), WinRM with Kerberos Auth connectors, `-Parallel`, `-ParallelTenants`, `-Schedule`, SSH modes from Windows and Linux admin machines, cmd.exe as the SSH default shell, the 1.4.0 installer settings, and the 1.4.0 wrapper checks.
 
 ## Later
 
@@ -25,6 +25,4 @@ From the Validation Record: the certificate step inside a real upgrade, WinRM wi
 - **Compatibility pre-check:** warn when the installer version is not listed as a supported upgrade from the installed version.
 - **Clean-up option:** remove the staged installer, configuration file and PFX from the connector after a successful run.
 - **Certificate expiry warning** in Verify, a set number of days ahead.
-- **Wrapper fixes:** the served-certificate comparison under Windows PowerShell 5.1; the keytab-log check reading only the newest result.
 - **Tests:** a scripted self-test that needs no connector (fleet-file parsing, plan, missing-file messages, log cleaning), runnable in continuous integration.
-- **Licence:** choose one before the repository is made public.

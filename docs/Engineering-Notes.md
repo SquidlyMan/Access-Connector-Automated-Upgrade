@@ -75,7 +75,7 @@ A check of "the file exists and is not empty" passes on that 6-byte file. A usab
 
 - It creates a **user** account named after the connector (in `CN=Users`) if none exists, and resets its password.
 - It registers `HTTP/<name>` and `HTTP/<fully qualified name>` service principal names on that user.
-- It appends to `conf\krb5-setup.log`.
+- It appends to `conf\krb5-setup.log`, one block per run ending with `RESULT: exit code <n>`. A check must look only at what the current run added (both the helper and, since 1.4.0, the wrapper note the log's length before and read from there); an old `Password set failed` stays in the file for good.
 - It must run under Windows PowerShell 5.1; it fails under PowerShell 7.
 
 Consequence: if Kerberos Auth is later removed from a connector, that user account and its service principal names remain. Disable the account.
@@ -92,7 +92,9 @@ Consequence: if Kerberos Auth is later removed from a connector, that user accou
 
 ### Reading the served certificate under Windows PowerShell 5.1
 
-The usual trick of capturing the certificate in a `ServerCertificateValidationCallback` does not work on .NET Framework: the certificate object is reset once the callback returns, so its thumbprint reads as empty and a comparison silently never fires. The wrapper's own served-certificate check has this weakness. The helper instead opens a TCP connection, runs a TLS 1.2 handshake with `SslStream`, and hashes the raw certificate bytes.
+The usual trick of capturing the certificate in a `ServerCertificateValidationCallback` does not work on .NET Framework: the certificate object is reset once the callback returns, so its thumbprint reads as empty and a comparison silently never fires. The wrapper's served-certificate check had this weakness until 1.4.0. Both the helper and (since 1.4.0) the wrapper open a TCP connection, run a TLS 1.2 handshake with `SslStream`, and hash the raw certificate bytes.
+
+With the check working, the wrapper sees the self-signed certificate after every upgrade of a Kerberos Auth connector (previous section). That is reported as a warning after an upgrade and an error after a fresh install, so the wrapper's exit code does not turn every upgrade into a failure.
 
 ### Health pages
 
@@ -110,6 +112,12 @@ The Kerberos Auth port is read from the service's configuration rather than assu
 ### Kerberos redirects go to the connector's own name
 
 **Observed** in a browser. During a Kerberos sign-in the browser is sent to `https://<connector name>/eks/v4/authenticate`. So the certificate must name each connector itself, not only a load-balancer name, and a load balancer in front of Kerberos Auth should pass TLS through rather than end it.
+
+## Settings the installer saves
+
+**Observed** on a 26.10 connector. `<install folder>\Support\scripts\install.properties` holds the settings given at install time, one `NAME=value` per line, including `INSTALL_DIR` (for example `C:\Program Files\Access Connector\`), the four `*_SVC_PORT` values, `PROXY_HOST`, `PROXY_PORT`, `PROXY_USER`, `NON_PROXY_HOSTS`, `SYSLOG_CONFIGURATIONS` and `FIPS_ENABLED` (`true` or `false`). **It also holds client secrets and the PFX password (`*_CLIENT_SECRET`, `SSL_CERT_PASS`)**: read it by line name, never print it whole. The uninstall registry entry's `InstallLocation` is the folder above, for example `C:\Program Files\`.
+
+The helper reads `FIPS_ENABLED` to refuse a change of FIPS mode on an installed connector, and `PROXY_USER` to refuse a certificate repair.
 
 ## Running things on a connector remotely
 

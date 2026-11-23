@@ -40,7 +40,7 @@ $ErrorActionPreference = 'Stop'
 # 'pwsh -File' passes "A,B" as one string, so split comma lists here.
 if ($Tenant)    { $Tenant    = @($Tenant    | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
 if ($Connector) { $Connector = @($Connector | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
-$script:Version  = '1.3.1'
+$script:Version  = '1.4.0'
 $script:UiWidth  = 78
 $script:Name     = 'Invoke-AccessConnectorUpgrade.ps1'
 $script:Started  = Get-Date
@@ -239,6 +239,8 @@ function Show-Help {
     Write-UiSection 'DESCRIPTION'
     Write-UiText 'Reads a fleet file (.psd1) listing tenants and their connectors. For each connector it copies the installer, the tenant config file, the trust certificates, the Kerberos PFX and the patch to local disk on the connector, then runs Invoke-ConnectorUpgradeLocal.ps1 there. That helper runs Install-AccessConnector.ps1, the vendor patch script and a health check.'
     Write-UiText 'Passwords are asked once per tenant at hidden prompts. In SSH mode they travel inside the SSH session on standard input; they are never placed on a command line by this script, in the fleet file or in a log. (The vendor installer itself receives them on its own command line on the connector and records them, base64-encoded, in its own log; that is an installer limitation. This tool replaces them with asterisks in that log after every install.)'
+    Write-UiSection 'INSTALLER SETTINGS FROM THE FLEET FILE'
+    Write-UiText 'Besides the services, certificates, service account and syslog target, a fleet entry can set the install folder (InstallDir), FIPS mode (EnableFips), the four service ports (DirectorySyncPort, UserAuthPort, KerberosAuthPort, VirtualAppPort) and an outbound proxy (ProxyHost, ProxyPort, ProxyUser, NonProxyHosts). They are checked before any connector is contacted and shown in the plan. When ProxyUser is set, the proxy password is asked at run time with the others. A misspelt setting is named in a note.'
     Write-UiSection 'WHICH FLEET FILE IS USED'
     Write-UiText 'So one shared folder can serve several machines, the fleet file is chosen in this order, first match wins: -FleetConfig; -Fleet <name>; fleet.<this computer name>.psd1; fleet.<this computer domain>.psd1; fleet.psd1. The plan shown before any change names the file in use and why.'
     Write-UiSection 'WHEN A TENANT''S FILES ARE IN ANOTHER COPY OF THE FOLDER'
@@ -312,9 +314,9 @@ function Show-Help {
     Write-UiSection 'LOGGING'
     Write-UiText 'Audit log (-AuditLog): one appended key=value line per run saying who ran what and the outcome. Error log (-ErrorLog): the detail of each failure. Passwords are masked everywhere, including in the vendor installer logs copied back from each connector.'
     Write-UiSection 'REQUIREMENTS'
-    Write-UiText 'PowerShell 7. SSH and Verify modes need ssh and scp on the PATH and key sign-in to each connector. WinRM mode needs Windows and PowerShell remoting enabled on the connectors. The staging share must be readable from the machine running this script.'
+    Write-UiText 'PowerShell 7 or later (pwsh) on the machine running this script; it refuses to start under Windows PowerShell 5.1. The connectors need only the Windows PowerShell 5.1 that Windows Server has. SSH and Verify modes need ssh and scp on the PATH and key sign-in to each connector. WinRM mode needs Windows and PowerShell remoting enabled on the connectors. The staging share must be readable from the machine running this script.'
     Write-UiSection 'ABOUT'
-    Write-UiText "Version $($script:Version). Created 2026-11-21."
+    Write-UiText "Version $($script:Version). Created 2026-11-21. MIT License; see the LICENSE file."
     Write-UiSection 'DOCUMENTATION'
     Write-UiText 'Omnissa OMSA-2026-0003, KB 6001878, and the Access Connector installation guide (silent mode chapter).'
     Write-Host ''
@@ -533,6 +535,12 @@ function New-JobJson { param($T)
         ForceReinstall = [bool]($ForceReinstall -or $T.ForceReinstall)
         DryRun = [bool]$DryRun; ApplyJavaPatch = [bool](-not $SkipJavaPatch -and $script:FleetData.JavaPatchDir)
         SkipDomainCheck = [bool]$SkipDomainCheck
+        # installer settings passed through to Install-AccessConnector.ps1 (null = installer default)
+        InstallDir = $(if ($T.InstallDir) { ([string]$T.InstallDir).TrimEnd('\') } else { $null })
+        EnableFips = [bool]$T.EnableFips
+        DirectorySyncPort = $T.DirectorySyncPort; UserAuthPort = $T.UserAuthPort
+        KerberosAuthPort = $T.KerberosAuthPort; VirtualAppPort = $T.VirtualAppPort
+        ProxyHost = $T.ProxyHost; ProxyPort = $T.ProxyPort; ProxyUser = $T.ProxyUser; NonProxyHosts = $T.NonProxyHosts
     }
     $f = Join-Path ([IO.Path]::GetTempPath()) ("acjob_" + [guid]::NewGuid().ToString('N') + '.json')
     Set-Content -LiteralPath $f -Value ($job | ConvertTo-Json) -Encoding utf8
@@ -604,6 +612,40 @@ function Format-Cert { param($C)
     if ($C.NotAfter -and ([string]$C.NotAfter -lt (Get-Date -Format 'yyyy-MM-dd'))) { return "EXPIRED $($C.NotAfter) ('$($C.Subject)')" }
     return "ok ('$($C.Subject)' from '$($C.Issuer)', to $($C.NotAfter))" }
 
+$script:TenantKeys = @('Name','Installer','InstallerVersion','ExpectVersionPrefix','ConfigFile','TrustStore','Pfx','Services',
+    'ServiceAccount','Syslog','ForceReinstall','Connectors','InstallDir','EnableFips','DirectorySyncPort','UserAuthPort',
+    'KerberosAuthPort','VirtualAppPort','ProxyHost','ProxyPort','ProxyUser','NonProxyHosts')
+function Get-TenantOptionProblems { param($T)
+    # What is wrong with the installer settings of one fleet entry. Nothing is contacted.
+    $p = [System.Collections.Generic.List[string]]::new(); $n = $T.Name
+    $seen = @{}
+    foreach ($k in 'DirectorySyncPort','UserAuthPort','KerberosAuthPort','VirtualAppPort','ProxyPort') {
+        if ($null -eq $T[$k] -or [string]$T[$k] -eq '') { continue }
+        $v = 0
+        if (-not [int]::TryParse([string]$T[$k], [ref]$v) -or $v -lt 1 -or $v -gt 65535) { $p.Add("${n} ${k}: '$($T[$k])' is not a port number (1 to 65535)"); continue }
+        if ($k -ne 'ProxyPort') { if ($seen.ContainsKey($v)) { $p.Add("${n} ${k}: port $v is already used by $($seen[$v])") } else { $seen[$v] = $k } }
+    }
+    if ($null -ne $T.EnableFips -and $T.EnableFips -isnot [bool]) { $p.Add("${n} EnableFips: use `$true or `$false") }
+    if ($T.InstallDir -and (([string]$T.InstallDir -notmatch '^[A-Za-z]:\\') -or ([string]$T.InstallDir -match '["%]'))) {
+        $p.Add("${n} InstallDir: '$($T.InstallDir)' is not a full Windows path such as 'D:\Program Files' (the connector goes in its Access Connector folder)") }
+    foreach ($k in 'ProxyHost','ProxyUser','NonProxyHosts') { if ($T[$k] -and ([string]$T[$k] -match '[\s"]')) { $p.Add("${n} ${k}: spaces and double quotes are not allowed") } }
+    if (-not $T.ProxyHost) { foreach ($k in 'ProxyPort','ProxyUser','NonProxyHosts') { if ($T[$k]) { $p.Add("${n} $k is set but ProxyHost is not") } } }
+    return ,$p }
+function Format-TenantOptions { param($T)
+    # The installer settings of one fleet entry, in one line; '' when it uses the installer defaults.
+    $parts = @()
+    if ($T.InstallDir) { $parts += "install folder $(([string]$T.InstallDir).TrimEnd('\'))\Access Connector" }
+    if ($T.EnableFips) { $parts += 'FIPS mode' }
+    $ports = @(foreach ($k in @(@('DirectorySyncPort','DS'),@('UserAuthPort','UA'),@('KerberosAuthPort','KA'),@('VirtualAppPort','VA'))) { if ($T[$k[0]]) { "$($k[1])=$($T[$k[0]])" } })
+    if ($ports.Count) { $parts += 'ports ' + ($ports -join ' ') }
+    if ($T.ProxyHost) {
+        $px = 'proxy ' + $T.ProxyHost + $(if ($T.ProxyPort) { ":$($T.ProxyPort)" } else { '' })
+        $more = @(); if ($T.ProxyUser) { $more += "user $($T.ProxyUser)" }; if ($T.NonProxyHosts) { $more += "direct to $($T.NonProxyHosts)" }
+        if ($more.Count) { $px += ' (' + ($more -join '; ') + ')' }
+        $parts += $px
+    }
+    return ($parts -join ', ') }
+
 function Get-StagingGaps { param([string]$Root, $T)
     # The files tenant $T needs that are not under $Root.
     $gaps = [System.Collections.Generic.List[string]]::new()
@@ -654,6 +696,9 @@ function Find-StagedCopy { param($T)
 # ====================================================================== main
 Initialize-UiStyle
 Show-LaunchNotice
+# PowerShell 7 or later, before anything else (help included). Windows PowerShell 5.1 lacks what
+# this script uses to run ssh and to tell the platforms apart.
+if ($PSVersionTable.PSVersion.Major -lt 7) { Stop-Run ("This script needs PowerShell 7 or later (pwsh). It was started in PowerShell $($PSVersionTable.PSVersion). Install PowerShell 7 and run it with pwsh, for example: pwsh -File .\$($script:Name) -Help") 'precheck' }
 if ($Help) { Show-Help; return }
 
 $script:Here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -661,7 +706,6 @@ $script:AuditPath = Resolve-LogPath -Value $AuditLog -DefaultName 'connector-fle
 $script:ErrorPath = Resolve-LogPath -Value $ErrorLog -DefaultName 'connector-fleet-errors.log'
 $script:HashCache = @{}
 
-if ($PSVersionTable.PSVersion.Major -lt 7) { Stop-Run 'This script needs PowerShell 7 (pwsh).' 'precheck' }
 $fleetWhy = 'given with -FleetConfig'
 if (-not $FleetConfig) {
     $cands = [System.Collections.Generic.List[object]]::new()
@@ -744,6 +788,15 @@ if ($Mode -eq 'RepairCertificate') {
     foreach ($t in $planTenants) { if ((Split-Path ([string]$t.Pfx) -Leaf) -notmatch '^[A-Za-z0-9._-]+$') { Stop-Run "The PFX file name for $($t.Name) may hold only letters, digits, dot, dash and underscore for this mode." 'fleet' } }
 }
 if ($plan.Count -eq 0) { Stop-Run 'No connectors selected. Check -Tenant / -Connector against the fleet file.' 'fleet' }
+# A misspelt setting would otherwise be dropped without a word (a proxy that is never set, say).
+foreach ($t in $planTenants) {
+    $odd = @($t.Keys | Where-Object { $_ -notin $script:TenantKeys })
+    if ($odd.Count) { Say "[note] $($t.Name): unknown fleet setting(s) ignored: $($odd -join ', '). Check the spelling against docs/Fleet-File-Reference.md." 'WARN' }
+}
+if ($Mode -in 'SSH','WinRM','Stage') {
+    $optBad = @(foreach ($t in $planTenants) { Get-TenantOptionProblems $t | ForEach-Object { $_ } })
+    if ($optBad.Count) { Stop-Run ("Fleet file settings are not valid. Nothing was contacted:`n" + (($optBad | ForEach-Object { "  $_" }) -join "`n")) 'fleet' }
+}
 
 if ($Mode -notin 'Verify','RepairKeytab') {
     $missing = [System.Collections.Generic.List[string]]::new()
@@ -814,6 +867,9 @@ $doing = @(foreach ($x in $plan) {
     elseif ($Mode -eq 'Verify') { '' } else { [string](Split-Path ([string]$x.Tenant.Installer) -Leaf) } })
 $same = @($doing | Select-Object -Unique)
 if ($same.Count -eq 1 -and $same[0]) { & $planLine $(if ($Mode -in 'RepairKeytab','RepairCertificate') { 'Action' } else { 'Installer' }) $same[0] }
+if ($Mode -in 'SSH','WinRM','Stage') {
+    foreach ($t in $planTenants) { $o = Format-TenantOptions $t; if ($o) { & $planLine 'Settings' "$($t.Name): $o" } }
+}
 Write-Host ''
 for ($i = 0; $i -lt $plan.Count; $i++) {
     $x = $plan[$i]
@@ -891,9 +947,11 @@ foreach ($t in $planTenants) {
         $s = @{ Cfg = Read-UiSecret '    Configuration file (es-config) password' }
         if ($t.Pfx) { $s.Pfx = Read-UiSecret "    Kerberos PFX password ($(Split-Path $t.Pfx -Leaf))" }
         if ($t.ServiceAccount -and ($t.Services -match 'KerberosAuthService|VirtualAppService')) { $s.Svc = Read-UiSecret "    Service account password ($($t.ServiceAccount))" }
+        if ($t.ProxyHost -and $t.ProxyUser) { $s.Proxy = Read-UiSecret "    Proxy password ($($t.ProxyUser))" }
         foreach ($k in @($s.Keys)) { Register-Secret (ConvertTo-PlainText $s[$k]) }
         # An empty password would reach the installer after the services are stopped, so stop here.
-        $names = @{ Cfg = 'configuration file'; Pfx = 'Kerberos PFX'; Svc = 'service account' }
+        $names = @{ Cfg = 'configuration file'; Pfx = 'Kerberos PFX'; Svc = 'service account'; Proxy = 'proxy' }
+        if ($s.Proxy -and (ConvertTo-PlainText $s.Proxy) -match '"') { Stop-Run "The proxy password for $($t.Name) contains a double quote, which the installer's command line cannot carry. Nothing was changed." 'secrets' }
         foreach ($k in @($s.Keys)) { if ($s[$k].Length -eq 0) { Stop-Run "Empty $($names[$k]) password for $($t.Name). Nothing was changed." 'secrets' } }
     }
     $secrets[$t.Name] = $s
@@ -953,7 +1011,8 @@ function Start-ConnectorRun { param($X, [bool]$Async)
         if ($Mode -eq 'RepairKeytab') { Send-PayloadSsh -Conn $X -T $t -RunnerOnly }
         elseif ($Mode -eq 'RepairCertificate') { Send-PayloadSsh -Conn $X -T $t -RunnerOnly -Also @((Join-Path $script:StagingRoot $t.Pfx)) }
         else { Send-PayloadSsh -Conn $X -T $t }
-        $b64 = @(foreach ($k in 'Cfg','Pfx','Svc') { [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((ConvertTo-PlainText $s[$k]))) })
+        # four lines, always in this order (an empty one where a password is not needed)
+        $b64 = @(foreach ($k in 'Cfg','Pfx','Svc','Proxy') { [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((ConvertTo-PlainText $s[$k]))) })
         $ra = $runAs[$t.Name]; $extra = ''
         if ($ra) {
             $b64 += [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$ra.User))
@@ -984,9 +1043,9 @@ function Start-ConnectorRun { param($X, [bool]$Async)
         Send-PayloadWinRM -Session $session -T $t -X $X
         $ra = $runAs[$t.Name]; $raUser = $null; $raPw = $null
         if ($ra) { $raUser = [string]$ra.User; $raPw = $ra.Password }
-        $job = Invoke-Command -Session $session -AsJob -ArgumentList $RemoteStageDir, $s.Cfg, $s.Pfx, $s.Svc, $raUser, $raPw -ScriptBlock { param($d, $c, $p, $v, $ru, $rp)
+        $job = Invoke-Command -Session $session -AsJob -ArgumentList $RemoteStageDir, $s.Cfg, $s.Pfx, $s.Svc, $raUser, $raPw, $s.Proxy -ScriptBlock { param($d, $c, $p, $v, $ru, $rp, $xp)
             Set-ExecutionPolicy Bypass -Scope Process -Force -ErrorAction SilentlyContinue
-            $a = @{ ConfigFilePassword = $c }; if ($p) { $a.SslCertPassword = $p }; if ($v) { $a.ServiceAccountPassword = $v }
+            $a = @{ ConfigFilePassword = $c }; if ($p) { $a.SslCertPassword = $p }; if ($v) { $a.ServiceAccountPassword = $v }; if ($xp) { $a.ProxyPassword = $xp }
             if ($ru) { $a.RunAsUser = $ru; if ($rp) { $a.RunAsPassword = $rp } }
             & (Join-Path $d 'Invoke-ConnectorUpgradeLocal.ps1') @a *>&1 | ForEach-Object { [string]$_ } }
     } catch { Remove-PSSession $session -ErrorAction SilentlyContinue; throw }

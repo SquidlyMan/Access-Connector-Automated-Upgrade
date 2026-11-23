@@ -24,6 +24,10 @@ Logs to read, in order:
 | `-Mode WinRM needs Windows` | WinRM mode started from macOS or Linux | Use SSH mode |
 | `Not interactive: add -Yes` | Run from a scheduler or with input redirected | Add `-Yes` |
 | `Empty ... password ... Nothing was changed` | Enter was pressed at a password prompt | Run again |
+| `Fleet file settings are not valid. Nothing was contacted` | A port, `EnableFips`, `InstallDir` or proxy setting is wrong; each one is listed | Correct the fleet entry |
+| `[note] ...: unknown fleet setting(s) ignored` | A setting the tool does not know, usually a misspelling | Correct the spelling (Fleet File Reference) |
+| `This script needs PowerShell 7 or later (pwsh)` | Started under Windows PowerShell 5.1 | Install PowerShell 7 and start it with `pwsh` |
+| `proxy password ... contains a double quote` | The installer's command line cannot carry it | Change the proxy account's password |
 
 ## Connecting
 
@@ -47,6 +51,8 @@ Logs to read, in order:
 | `this sign-in (...) cannot query Active Directory` | A Kerberos Auth connector was run without the scheduled-task route | Give a domain admin account when asked. With `-Mode Stage`, run `Run-Upgrade.cmd` signed in as a domain admin. |
 | `a built-in service account cannot rebuild the Kerberos keytab` | The helper was started as SYSTEM for a Kerberos Auth connector | Use a domain admin account |
 | `this server writes PowerShell command parameters to its event log` | Module logging policy is on | Exempt the server for the run |
+| `this connector is installed in FIPS mode; set EnableFips = $true` | The fleet entry does not ask for FIPS mode, but the connector has it | Add `EnableFips = $true` to the entry |
+| `the fleet entry asks for FIPS mode, but this connector is installed without it` | FIPS mode cannot be changed after install | Remove `EnableFips`, or reinstall in FIPS mode as the message says |
 | `a task named AccessConnectorUpgrade-RunAs is already running` | An earlier run is still working on that connector | Wait for it. Check `task-console_*.log` on the connector. |
 
 ## During and after the install
@@ -62,6 +68,8 @@ Logs to read, in order:
 | `the installer finished, but Install-AccessConnector.ps1 reported a problem afterwards` | The connector is on the new version but one of the wrapper's checks afterwards failed | Read `AccessConnector_Audit_*.log`; the tool has carried on with its own checks |
 | `the connector returned no result` | The connection dropped, or the helper was stopped | The work may still be running on the connector. Check `result.json` and the task console log there before running again. |
 | `the task is still running after 120 minutes` | The scheduled task has not finished | It was left running. Check `task-console_*.log` on the connector. |
+| `The fleet entry names the install folder ..., but this connector is installed in ...` (warning) | `InstallDir` differs from where the connector is | An upgrade stays where it is. Correct `InstallDir`, or move it with `-ForceReinstall` |
+| Wrapper audit log: `Served certificate does not match the provided PFX ... Expected after an upgrade` | Normal after an upgrade | The fleet tool puts the PFX back itself. Run by hand: `-Mode RepairCertificate` |
 | Same-version connector: nothing seems to happen | A connector already on the installer's version is skipped by design | Add `-ForceReinstall` if a reinstall is what you want |
 
 ## Verify shows something wrong

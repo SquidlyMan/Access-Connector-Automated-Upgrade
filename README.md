@@ -18,6 +18,7 @@ The tool is not tied to a connector version. It installs whichever installer fil
 - **Repairs** an empty keytab (`-Mode RepairKeytab`) or a wrong certificate (`-Mode RepairCertificate`) without reinstalling.
 - **Reports** the state of every connector without changing anything (`-Mode Verify`).
 - **Rehearses** with `-DryRun`: copies the files and runs every pre-flight check, installs nothing.
+- **Carries the installer settings** from the fleet file: install folder, FIPS mode, service ports and an outbound proxy.
 - **Protects passwords**: asked at hidden prompts, never stored, masked in all output, and removed from the vendor installer's own log after each install.
 
 ## Quick start
@@ -88,14 +89,18 @@ The repository is laid out as the staging folder the tool expects, so a clone is
 
 ## Requirements
 
-- **Admin machine:** PowerShell 7. SSH modes need `ssh` and `scp` on the PATH. WinRM mode needs Windows.
+- **Admin machine:** PowerShell 7 or later (`pwsh`); the tool refuses to start under Windows PowerShell 5.1. SSH modes need `ssh` and `scp` on the PATH. WinRM mode needs Windows.
 - **Connectors:** Windows Server with Windows PowerShell 5.1, and either OpenSSH Server with key sign-in or PowerShell remoting.
 - **Files:** the Omnissa Access Connector installer, each tenant's `es-config.json`, and for Kerberos Auth a PFX.
 - **Accounts:** an administrator on each connector; for Kerberos Auth connectors a domain admin account, typed at run time.
 
 ## Status
 
-Version 1.3.1. The tool has upgraded, clean installed and repaired connectors in a lab of ten connectors across four tenants and two Active Directory forests. Some paths are built but not yet proven by a real run; they are listed plainly in the [Validation Record](docs/Validation-Record.md). Read it before relying on a path it marks as unproven.
+Version 1.4.0. The tool has upgraded, clean installed and repaired connectors in a lab of ten connectors across four tenants and two Active Directory forests. Some paths are built but not yet proven by a real run; they are listed plainly in the [Validation Record](docs/Validation-Record.md). Read it before relying on a path it marks as unproven.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE). The licence and the disclaimer both say the same thing: no warranty, and no liability for the author or for Omnissa.
 
 ## Getting help with a script
 

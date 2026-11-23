@@ -69,9 +69,14 @@
     first probe already returns 'true', the Kerberos service is restarted once
     and re-verified, confirming it comes back healthy from a clean start with
     the keytab and certificate loaded. Requires
-    domain rights (create machine account, ktpass, setspn). A served-cert
-    mismatch is reported as an error but not auto-remediated - the keystore
-    password is encrypted, so the safe fix is reinstalling with the correct PFX.
+    domain rights (create machine account, ktpass, setspn). Only the lines the
+    vendor script added to krb5-setup.log during this run are judged (it
+    appends on every run). The served certificate is read by a TLS handshake of
+    its own, which works under Windows PowerShell 5.1. A mismatch after a fresh
+    install is an error. After an UPGRADE it is expected: the installer does not
+    carry a PFX through an upgrade and serves a certificate of its own, so it is
+    reported as a warning; put the PFX back with the fleet tool's
+    -Mode RepairCertificate (its upgrades do this by themselves).
     Suppress the whole step with -SkipKeytab.
 
     Conditional by design:
@@ -695,7 +700,9 @@ $ConfigFilePath = Resolve-FullPath $ConfigFilePath
 $LogPath        = Resolve-FullPath $LogPath
 if ($SslCertPath)         { $SslCertPath         = Resolve-FullPath $SslCertPath }
 if ($TrustStoreCertsPath) { $TrustStoreCertsPath = Resolve-FullPath $TrustStoreCertsPath }
-if ($InstallDir)          { $InstallDir          = Resolve-FullPath $InstallDir }
+if ($InstallDir)          { $InstallDir          = Resolve-FullPath $InstallDir
+    # 'D:\Apps\' would end in \" inside the installer's quoted argument; 'D:\' stays as it is
+    if ($InstallDir.Length -gt 3) { $InstallDir = $InstallDir.TrimEnd('\') } }
 
 # Locate the connector install root by finding the vendor keytab script under it.
 function Get-ConnectorRoot {
@@ -748,6 +755,7 @@ if (-not (Get-Module -ListAvailable -Name ActiveDirectory)) {
 exit `$LASTEXITCODE
 "@
     Set-Content -LiteralPath $runner -Value $body -Encoding ASCII
+    $logFrom = Get-SetupLogLength -ConnectorRoot $ConnectorRoot
 
     Start-Process -FilePath $ps51 `
                   -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$runner`"" `
@@ -758,8 +766,8 @@ exit `$LASTEXITCODE
     $item = Get-Item -LiteralPath $keytab -ErrorAction SilentlyContinue
     # The vendor script blanks the keytab first (6 bytes); a usable one is a few hundred bytes.
     if ($item -and $item.Length -ge 32) {
-        $setupLog = Join-Path $confDir 'krb5-setup.log'
-        if ((Test-Path -LiteralPath $setupLog) -and (Select-String -LiteralPath $setupLog -SimpleMatch 'Password set failed' -Quiet)) {
+        $added = [string](Get-SetupLogText -ConnectorRoot $ConnectorRoot -From $logFrom)
+        if ($added -match 'Password set failed') {
             $r.Message = "keytab written ($($item.Length) bytes) but krb5-setup.log shows 'Password set failed' - likely a bad keytab (wrong PowerShell edition?). Console: $outLog"
         } else {
             $r.Ok = $true
@@ -769,6 +777,47 @@ exit `$LASTEXITCODE
         $r.Message = "keytab still missing or empty after the run. Console: $outLog / $outLog.err"
     }
     return $r
+}
+
+# The SHA-1 thumbprint of the certificate the service on localhost:<Port> presents, read with a
+# TLS 1.2 handshake of its own and a hash of the raw certificate bytes. '' when it cannot be read.
+function Get-ServedThumbprint {
+    param([int]$Port = 443, [int]$TimeoutMs = 15000)
+    $tcp = $null; $ssl = $null
+    try {
+        $tcp = New-Object System.Net.Sockets.TcpClient
+        $iar = $tcp.BeginConnect('localhost', $Port, $null, $null)
+        if (-not $iar.AsyncWaitHandle.WaitOne($TimeoutMs)) { return '' }
+        $tcp.EndConnect($iar)
+        $tcp.ReceiveTimeout = $TimeoutMs; $tcp.SendTimeout = $TimeoutMs
+        $any = [System.Net.Security.RemoteCertificateValidationCallback]{ $true }
+        $ssl = New-Object System.Net.Security.SslStream($tcp.GetStream(), $false, $any)
+        $ssl.AuthenticateAsClient('localhost', $null, [System.Security.Authentication.SslProtocols]::Tls12, $false)
+        if ($null -eq $ssl.RemoteCertificate) { return '' }
+        $der = $ssl.RemoteCertificate.GetRawCertData()
+        $sha = [System.Security.Cryptography.SHA1]::Create()
+        try { $t = ([System.BitConverter]::ToString($sha.ComputeHash($der))).Replace('-', '') } finally { $sha.Dispose() }
+        if ($t -notmatch '^[0-9A-F]{40}$') { return '' }
+        return $t
+    } catch { return '' }
+    finally { if ($ssl) { try { $ssl.Dispose() } catch { } }; if ($tcp) { try { $tcp.Close() } catch { } } }
+}
+
+# The text of krb5-setup.log from character $From on: what the vendor script added since then.
+# The vendor script appends on every run, so older runs must not be judged again.
+function Get-SetupLogText {
+    param([string]$ConnectorRoot, [int]$From = 0)
+    $log = Join-Path $ConnectorRoot 'Kerberos Auth Service\conf\krb5-setup.log'
+    if (-not (Test-Path -LiteralPath $log)) { return $null }
+    $all = [string](Get-Content -Raw -LiteralPath $log -ErrorAction SilentlyContinue)
+    if ($From -gt 0 -and $all.Length -ge $From) { return $all.Substring($From) }
+    return $all
+}
+function Get-SetupLogLength {
+    param([string]$ConnectorRoot)
+    $t = Get-SetupLogText -ConnectorRoot $ConnectorRoot
+    if ($null -eq $t) { return 0 }
+    return $t.Length
 }
 
 # Probe the eks health endpoint locally and capture the certificate the service
@@ -784,21 +833,19 @@ function Test-EksHealth {
         $txt = Get-Content -Raw -LiteralPath $props
         if ($txt -match '(?m)^eks\.http\.server\.port=(\d+)') { $port = $Matches[1] }
     }
-    $script:__eksServedCert = $null
     try {
         $req = [System.Net.HttpWebRequest]::Create("https://localhost:$port/eks/health/")
         $req.Timeout = 15000
-        $req.ServerCertificateValidationCallback = { param($s,$cert,$chain,$errors) $script:__eksServedCert = $cert; $true }
+        $req.ServerCertificateValidationCallback = [System.Net.Security.RemoteCertificateValidationCallback]{ $true }
         try { $resp = $req.GetResponse() }
         catch [System.Net.WebException] { if ($_.Exception.Response) { $resp = $_.Exception.Response } else { throw } }
         $r.Reachable = $true
         $sr = New-Object System.IO.StreamReader($resp.GetResponseStream())
         $r.Body = $sr.ReadToEnd().Trim()
-        $sr.Dispose(); $resp.Dispose()
-        if ($script:__eksServedCert) {
-            $c2 = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($script:__eksServedCert)
-            $r.ServedThumbprint = $c2.Thumbprint
-        }
+        $sr.Dispose(); $resp.Close()
+        # The certificate cannot be taken from the callback above: on Windows PowerShell 5.1 the
+        # object handed to it is emptied once it returns. Read it with a handshake of its own.
+        $r.ServedThumbprint = Get-ServedThumbprint -Port ([int]$port)
         $r.Healthy = ($r.Body -eq 'true')
         if ($ExpectedThumbprint -and $r.ServedThumbprint) {
             $r.CertMatch = ($r.ServedThumbprint -eq $ExpectedThumbprint)
@@ -812,19 +859,32 @@ function Test-EksHealth {
 # RESULT exit code. Absence of the log with a keytab present means the keytab
 # was made outside the vendor script - noted, not failed.
 function Test-KeytabSetupLog {
-    param([string]$ConnectorRoot)
+    param([string]$ConnectorRoot, [int]$From = 0)
+    # Judges only what the vendor script wrote from character $From on (this run). When this run
+    # wrote nothing, the newest RESULT line in the log is judged instead, and the message says so.
     $r = [pscustomobject]@{ Exists=$false; Ok=$false; Message='' }
-    $log = Join-Path $ConnectorRoot 'Kerberos Auth Service\conf\krb5-setup.log'
-    if (-not (Test-Path -LiteralPath $log)) { $r.Message = "krb5-setup.log not present"; return $r }
+    $all = Get-SetupLogText -ConnectorRoot $ConnectorRoot
+    if ($null -eq $all) { $r.Message = "krb5-setup.log not present"; return $r }
     $r.Exists = $true
-    $txt = Get-Content -Raw -LiteralPath $log
-    if ($txt -match 'Password set failed') {
-        $r.Message = "krb5-setup.log contains 'Password set failed' - keytab was written with a bad/empty password (PowerShell 7 symptom)"
-    } elseif ($txt -match '(?m)^RESULT: exit code (\d+)\s*$' -and $Matches[1] -ne '0') {
-        $r.Message = "krb5-setup.log last RESULT exit code is $($Matches[1])"
+    $txt = Get-SetupLogText -ConnectorRoot $ConnectorRoot -From $From
+    $scope = 'in this run'
+    if (-not ([string]$txt).Trim()) {
+        # nothing new: judge the newest entry only, which starts after the RESULT line before it
+        $scope = 'in its newest entry (nothing was added in this run)'
+        $all_r = [regex]::Matches($all, '(?m)^RESULT: exit code (-?\d+)[ \t]*\r?$')
+        $txt = $all
+        if ($all_r.Count -ge 2) { $prev = $all_r[$all_r.Count - 2]; $txt = $all.Substring($prev.Index + $prev.Length) }
+    }
+    $results = [regex]::Matches($txt, '(?m)^RESULT: exit code (-?\d+)[ \t]*\r?$')
+    $last = if ($results.Count) { $results[$results.Count - 1].Groups[1].Value } else { $null }
+    $pwFail = ($txt -match 'Password set failed')
+    if ($pwFail) {
+        $r.Message = "krb5-setup.log shows 'Password set failed' $scope - the keytab was written with a bad or empty password (PowerShell 7 symptom)"
+    } elseif ($null -ne $last -and $last -ne '0') {
+        $r.Message = "krb5-setup.log RESULT exit code is $last $scope"
     } else {
         $r.Ok = $true
-        $r.Message = "krb5-setup.log shows no failure signatures"
+        $r.Message = "krb5-setup.log shows no failure signatures $scope"
     }
     return $r
 }
@@ -851,6 +911,8 @@ $MsiLogPath          = Join-Path $LogPath "AccessConnector_MSI_$stamp.log"
 # --- main -----------------------------------------------------------------
 
 $exitCode = 0
+# The local health checks speak TLS 1.2; Windows PowerShell 5.1 may not offer it by default.
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch { }
 try {
     $needServiceAccount = ($Services -contains 'KerberosAuthService') -or ($Services -contains 'VirtualAppService')
     $mode = if ($DryRun) { 'DryRun (pre-flight only - installer NOT executed)' } else { 'Install' }
@@ -865,7 +927,7 @@ try {
     $installerVerStr = if ($installerVer)  { $installerVer.ToString() } else { 'unknown' }
     $installedVerStr = if ($installedInfo) { "$($installedInfo.Version) [$($installedInfo.Name)]" } else { 'not installed' }
 
-    $blocked = $false; $skip = $false; $doUninstallFirst = $false
+    $blocked = $false; $skip = $false; $doUninstallFirst = $false; $isUpgrade = $false
     if (-not $installedInfo) {
         $installAction = 'Fresh install'
     } elseif (-not $installerVer -or -not $installedVer) {
@@ -873,6 +935,7 @@ try {
     } else {
         $c = $installerVer.CompareTo($installedVer)
         if ($c -gt 0) {
+            $isUpgrade = $true
             $installAction = "Upgrade ($installedVer -> $installerVer)"
         } elseif ($c -eq 0) {
             if ($ForceReinstall) {
@@ -1009,6 +1072,12 @@ try {
         Write-Audit -Level INFO -Message "Service account pre-flight skipped (no -ServiceAccount)."
     }
 
+    if ($ProxyUser) {
+        if ([string]::IsNullOrEmpty($proxyPw)) { Write-Audit -Level ERROR -Message "Proxy pre-flight FAILED - no proxy password supplied for $ProxyUser."; $preflightOk = $false }
+        elseif ($proxyPw -match '"') { Write-Audit -Level ERROR -Message "Proxy pre-flight FAILED - the proxy password contains a double quote, which the installer's command line cannot carry."; $preflightOk = $false }
+    }
+    if (($ProxyPort -or $ProxyUser -or $NonProxyHosts) -and -not $ProxyHost) { Write-Audit -Level ERROR -Message "Proxy pre-flight FAILED - -ProxyPort, -ProxyUser or -NonProxyHosts given without -ProxyHost."; $preflightOk = $false }
+
     # -- build the property list (real + masked for display) ---------------
     $props   = [System.Collections.Generic.List[string]]::new()
     $display = [System.Collections.Generic.List[string]]::new()
@@ -1113,6 +1182,10 @@ try {
         }
 
         if ($proceedInstall) {
+            # Where krb5-setup.log ends now, so only what this install adds to it is judged later.
+            $setupLogFrom = 0
+            $rootBefore = Get-ConnectorRoot -InstallDir $InstallDir
+            if ($rootBefore) { $setupLogFrom = Get-SetupLogLength -ConnectorRoot $rootBefore }
             Write-Audit -Level INFO -Message "Starting installer..."
             $proc = Start-Process -FilePath $InstallerPath -ArgumentList $argString -Wait -PassThru -NoNewWindow
             $exitCode = $proc.ExitCode
@@ -1157,7 +1230,7 @@ try {
                         else           { Write-Audit -Level WARN -Message "Keytab missing or empty: $keytabPath" }
 
                         # 2) krb5-setup.log content check
-                        $slog = Test-KeytabSetupLog -ConnectorRoot $connRoot
+                        $slog = Test-KeytabSetupLog -ConnectorRoot $connRoot -From $setupLogFrom
                         if ($slog.Exists -and $slog.Ok)      { Write-Audit -Level OK   -Message "Setup log: $($slog.Message)" }
                         elseif ($slog.Exists)                { Write-Audit -Level WARN -Message "Setup log: $($slog.Message)"; $keytabOk = $false }
                         elseif ($keytabOk)                   { Write-Audit -Level INFO -Message "Setup log: $($slog.Message) (keytab exists - likely generated outside the vendor script)" }
@@ -1170,7 +1243,10 @@ try {
                             else              { Write-Audit -Level WARN -Message "/eks/health returned: '$($eks.Body)'" }
                             if ($null -ne $eks.CertMatch) {
                                 if ($eks.CertMatch) { Write-Audit -Level OK -Message "Served certificate matches the provided PFX (thumbprint $($eks.ServedThumbprint))." }
-                                else { Write-Audit -Level ERROR -Message "Served certificate does NOT match the provided PFX (served $($eks.ServedThumbprint), expected $expectedThumb) - the service is presenting a different cert (likely the installer self-signed). Reinstall with the correct PFX or replace the cert per Omnissa's Kerberos SSL procedure."; $exitCode = 1 }
+                                elseif ($isUpgrade) { Write-Audit -Level WARN -Message "Served certificate does not match the provided PFX (served $($eks.ServedThumbprint), expected $expectedThumb). Expected after an upgrade: the installer does not carry a PFX through an upgrade and serves a certificate of its own. Put the PFX back with Invoke-AccessConnectorUpgrade.ps1 -Mode RepairCertificate (its upgrades do this by themselves)." }
+                                else { Write-Audit -Level ERROR -Message "Served certificate does NOT match the provided PFX after a fresh install (served $($eks.ServedThumbprint), expected $expectedThumb) - the service is presenting a different certificate. Check the PFX, or put it on the service with Invoke-AccessConnectorUpgrade.ps1 -Mode RepairCertificate."; $exitCode = 1 }
+                            } elseif ($expectedThumb -and -not $eks.ServedThumbprint) {
+                                Write-Audit -Level WARN -Message "Could not read the certificate the Kerberos service presents, so it was not compared with the PFX."
                             } elseif ($eks.ServedThumbprint) {
                                 Write-Audit -Level INFO -Message "Served certificate thumbprint: $($eks.ServedThumbprint) (no PFX supplied to compare)."
                             }

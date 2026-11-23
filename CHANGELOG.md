@@ -2,6 +2,18 @@
 
 Versions are those of `Invoke-AccessConnectorUpgrade.ps1` and `Invoke-ConnectorUpgradeLocal.ps1`, which are released together.
 
+## 1.4.0 - 2026-11-22
+
+- **Installer settings through the fleet file** (issue 2): `InstallDir`, `EnableFips`, `DirectorySyncPort`, `UserAuthPort`, `KerberosAuthPort`, `VirtualAppPort`, `ProxyHost`, `ProxyPort`, `ProxyUser` and `NonProxyHosts` per fleet entry, passed to the wrapper through `job.json`. When `ProxyUser` is set the proxy password is asked at run time with the others and handed over like them (standard input, WinRM parameter, protected task file, `-Prompt`, `-Schedule`).
+- The settings are checked before any connector is contacted (port numbers, duplicate ports, a full Windows path for `InstallDir`, proxy settings without `ProxyHost`, spaces or quotes) and shown in the plan. An unknown setting in a fleet entry is named in a note, so a misspelling is not dropped silently.
+- The helper refuses (`Blocked`) a job whose FIPS setting differs from the installed connector's, because FIPS mode cannot be changed after install. It warns when `InstallDir` names a different folder than the one the connector is in.
+- The helper finds a connector installed outside `C:\Program Files` from the installer record, the job or the service paths.
+- The helper reads four secret lines on standard input instead of three (configuration, PFX, service account, proxy). Both scripts are released together, and the orchestrator copies the helper on every run.
+- `Install-AccessConnector.ps1`: the served-certificate check now reads the certificate with a TLS handshake of its own, so it works under Windows PowerShell 5.1 (before, it silently never compared). After an upgrade a mismatch is a warning, because the vendor installer never carries the PFX through an upgrade; after a fresh install it is an error.
+- `Install-AccessConnector.ps1`: the keytab-log check judges only what `setupKerberos.ps1` added to `krb5-setup.log` during this run, and the newest `RESULT` line (before, it read the first `RESULT` line of the whole log and any old `Password set failed`). It also turns on TLS 1.2 for its health checks, refuses a proxy password containing a double quote, and drops a trailing backslash from `-InstallDir`.
+- The orchestrator checks for PowerShell 7 before anything else, `-Help` included, and says how to start it with `pwsh`.
+- MIT licence (`LICENSE`); the help's ABOUT section says so.
+
 ## 1.3.1 - 2026-11-22
 
 Help text only. No change to what the scripts do.
