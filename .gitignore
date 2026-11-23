@@ -5,6 +5,24 @@ FleetDeploy/fleet.psd1
 FleetDeploy/fleet.*.psd1
 !FleetDeploy/fleet.example.psd1
 
+# Site fleet spreadsheets and -Mode Discover drafts (keep only the examples)
+FleetDeploy/*.csv
+FleetDeploy/*.xlsx
+FleetDeploy/*.xls
+FleetDeploy/*.tsv
+FleetDeploy/*.txt
+FleetDeploy/*.ods
+FleetDeploy/*.numbers
+FleetDeploy/*.xlsm
+FleetDeploy/*.xlsb
+# spreadsheet lock files (they hold the user's and the computer's name)
+.~lock.*#
+~$*
+!FleetDeploy/fleet.example.csv
+!FleetDeploy/fleet.example.xlsx
+# a fleet file -ImportFleet was writing when it stopped
+*.importing
+
 # Run output
 FleetDeploy/FleetLogs/
 *.log
@@ -37,6 +55,9 @@ HANDOFF*.md
 *.bak-*
 *.new
 *.test.ps1
+
+# Python's compile cache (tools/*.py)
+__pycache__/
 
 # OS noise
 .DS_Store

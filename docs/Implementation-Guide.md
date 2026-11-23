@@ -15,9 +15,19 @@ For each connector write down:
 | Which services it runs | Decides `Services`. Connectors with different services go in separate fleet entries (connector groups), even when they belong to the same tenant. |
 | Whether Kerberos Auth is really in use there | If not, do not install it. Kerberos Auth brings a certificate, a keytab and an Active Directory account to look after. |
 | Service account | `ServiceAccount` |
-| Current version | `-Mode Verify` will tell you |
+| Current version | `-Mode Discover` or `-Mode Verify` will tell you |
 
-`-Mode Verify` against a first draft of the fleet file is the quickest way to fill most of this in.
+For connectors that are already installed, `-Mode Discover` fills in most of this for you. It reads each connector's version, services, service account, tenant, syslog target, ports, proxy, install folder and FIPS mode over SSH, changes nothing, and writes a draft spreadsheet in the columns of the fleet file:
+
+```powershell
+pwsh ./Invoke-AccessConnectorUpgrade.ps1 -Mode Discover -Connector connector1.example.local,connector2.example.local
+```
+
+Complete the blanks the `Notes` column names (usually the installer, the es-config file and, for Kerberos Auth, the PFX), check the group names, and write the fleet file from it with `-ImportFleet <file> -DryRun`, then without `-DryRun`. A server without a connector has no settings to read: fill in its row by hand. With no connectors installed at all, start from the template `FleetDeploy/fleet.example.xlsx` instead. The Fleet File Reference has the rules for both, under "Building the fleet file from a spreadsheet" and "Discovering existing connectors".
+
+If you keep the fleet in the spreadsheet, keep it as the source: change the sheet and import it again, rather than editing the fleet file and the sheet separately. The import replaces every group in the fleet file and keeps a dated copy of the old file; before it does, a note names every group, connector and setting the new file would not have.
+
+`-Mode Verify` against the first fleet file then confirms sign-in to every connector and the state of each.
 
 ### Compatibility
 
@@ -47,7 +57,7 @@ The tool installs what you give it. It does not check compatibility with the Acc
 |---|---|
 | Admin machine is a Mac or Linux box | SSH |
 | Windows admin machine, SSH allowed on the servers | SSH (all modes available) |
-| SSH not allowed on the servers | WinRM for installs; no Verify or repair modes |
+| SSH not allowed on the servers | WinRM for installs; no Verify, Discover or repair modes |
 | No remote execution allowed at all | `-Mode Stage` needs SSH to copy; otherwise copy the staging folder's files to the connector yourself and run `Invoke-ConnectorUpgradeLocal.ps1 -Prompt` there with a hand-written `job.json` |
 | Change window when nobody is present | `-Mode Stage`, then `-Schedule` on each connector |
 
@@ -121,7 +131,7 @@ Neither has been through a real run yet (see the Validation Record).
 
 ### Unattended
 
-Add `-Yes` to skip the confirmation. Passwords are still asked at prompts unless you pass credentials as objects (`-Credential`, `-RunAsCredential`); the configuration, PFX and service account passwords are always prompted in SSH and WinRM modes. For a change window with nobody present, use Stage mode:
+Add `-Yes` to skip the confirmation. Passwords are still asked at prompts unless you pass credentials as objects (`-Credential`, `-RunAsCredential`); the configuration, PFX and service account passwords are always prompted in SSH and WinRM modes. A run started with no terminal (with its input redirected, or with `pwsh -NonInteractive`; start scheduled runs with `pwsh -NonInteractive`, because a scheduler that gives the run a console is not detected otherwise) cannot answer them: it stops at the first prompt with exit code 1, an error-log and an audit entry, before any connector is contacted. (In 1.4.1 a run with its input redirected ended silently with exit code 0.) For a change window with nobody present, use Stage mode:
 
 1. `-Mode Stage -Tenant <name>` copies everything and writes `Run-Upgrade.cmd`.
 2. On each connector, signed in as a domain admin:
@@ -144,6 +154,7 @@ The passwords are typed now and stored encrypted for that account; the task runs
 | Task | Command |
 |---|---|
 | Health report | `-Mode Verify` |
+| Fleet kept in a spreadsheet | Change the sheet; `-ImportFleet <file> -DryRun`, then without `-DryRun` |
 | Next connector release | New installer in `Installers`; update `Installer`, `InstallerVersion`, `ExpectVersionPrefix`; dry run; upgrade |
 | Certificate renewal for Kerberos Auth | New PFX in `ChildCerts` (same or new file name in `Pfx`); `-Mode RepairCertificate -DryRun`, then without `-DryRun` |
 | Empty keytab | `-Mode RepairKeytab` |
@@ -164,7 +175,7 @@ Because the run stops at the first unhealthy connector, the tenant's other conne
 ## 10. Keeping the tool itself up to date
 
 1. Pull the new version of this repository.
-2. Copy `FleetDeploy/Invoke-AccessConnectorUpgrade.ps1`, `FleetDeploy/Invoke-ConnectorUpgradeLocal.ps1` and `Silent Install/Install-AccessConnector.ps1` to every staging folder, keeping the previous files as dated backups.
+2. Copy `FleetDeploy/Invoke-AccessConnectorUpgrade.ps1`, `FleetDeploy/Invoke-ConnectorUpgradeLocal.ps1` and `Silent Install/Install-AccessConnector.ps1` to every staging folder, keeping the previous files as dated backups. Copy the spreadsheet templates (`FleetDeploy/fleet.example.xlsx`, `fleet.example.csv`) as well if you use them.
 3. Run `-Help` to confirm the version, then `-Mode Verify`.
 
 Do not update the scripts while a run is in progress.

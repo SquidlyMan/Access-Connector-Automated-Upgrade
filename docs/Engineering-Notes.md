@@ -1,6 +1,6 @@
 # Engineering Notes
 
-What was learned about the Omnissa Access Connector installer and its Kerberos pieces while building this tool, and why the tool does what it does. Each note says how it was established. Observations come from connector 26.05 and 26.10 unless stated; other versions may differ.
+What was learned about the Omnissa Access Connector installer and its Kerberos pieces while building this tool, and why the tool does what it does. Each note says how it was established. Observations come from connector 26.05 and 26.10 unless stated; other versions may differ. The notes on Excel near the end are known Excel behaviour rather than observations of the connector.
 
 ## The vendor installer
 
@@ -31,7 +31,7 @@ Things to know:
 
 **Observed.** The verbose MSI log (`AccessConnector_MSI_*.log`) has lines of the form `Adding AW... property. Its value is '...'` that carry the configuration, PFX and service account passwords base64-encoded, repeated about twenty times. Passwords also sit on the installer's command line while it runs (a documented limitation of the silent install).
 
-**What the tool does:** immediately after every install the helper replaces those values with asterisks in the logs on the connector, keeping each file's encoding and timestamp. The main script cleans the copies it brings back as well, and discards a copy it cannot check. Logs left by earlier manual installs are cleaned when the helper next runs.
+**What the tool does:** immediately after every install the helper replaces those values with asterisks in the logs on the connector, keeping each file's encoding and timestamp. The main script cleans the copies it brings back as well, and discards a copy it cannot check. Logs that earlier manual installs left in the helper's own `Logs` folder are cleaned when the helper next runs; an installer log kept anywhere else is not, so find and delete it.
 
 When reading an uncleaned MSI log, never print those lines.
 
@@ -119,6 +119,59 @@ The Kerberos Auth port is read from the service's configuration rather than assu
 
 The helper reads `FIPS_ENABLED` to refuse a change of FIPS mode on an installed connector, and `PROXY_USER` to refuse a certificate repair.
 
+### What a connector records, and what it does not
+
+**Observed** on a real 26.10 connector, reading names and non-secret values only.
+
+`ES_CONFIG_FILE` and `SSL_CERT` in `install.properties` are **empty** after an install. A connector does not record which es-config file or which PFX it was installed with. So `-Mode Discover` matches them by name instead: the PFX by the certificate the Kerberos Auth service serves (a `.pfx` in `ChildCerts` named after the certificate's subject or one of its DNS names), and the configuration file by the tenant's host name in the file name (or, when no file has the full host name, by the tenant's first name part, with a note to check it). It never opens either file. Both matches have since worked on real staging folders (next section).
+
+Other values seen:
+
+| Where | Name | What it held |
+|---|---|---|
+| `install.properties` | `TENANT_URL` | The tenant address, for example `https://TENANT1.us1.example.com`, in the case it was typed |
+| `install.properties` | `TRUST_CERTS` | A comma-separated list of full paths to the certificate files given at install time, under `C:\ProgramData\AccessConnectorUpdate\TrustedCerts\` (where this tool stages them) |
+| `install.properties` | `SYSLOG_CONFIGURATIONS` | `host:port` |
+| `install.properties` | `INSTALL_DIR` | `C:\Program Files\Access Connector\` |
+| `HKLM\SOFTWARE\Omnissa\Access Connector` | `WS1_SYSLOG_HOSTNAME` | `host:port` |
+| `HKLM\SOFTWARE\Omnissa\Access Connector` | `IS_NET_API_LOGON_USERNAME` | The service account name, in the case it was typed at install time (on one connector in lower case, unlike the others) |
+| `HKLM\SOFTWARE\Omnissa\Access Connector` | `InstallDir` | `C:\Program Files\`, the folder above the connector's own |
+| `HKLM\SOFTWARE\Omnissa\Access Connector` | `WS1_INSTALLED_SERVICES` | Present; Discover reads it with the others |
+
+The Kerberos Auth and Virtual App services run as the service account (`DOMAIN\name`); Directory Sync and User Auth run as `NT AUTHORITY\LocalService`.
+
+Discover reads the registry values by name only: it never lists the key's values and never reads one whose name contains `PASS`. It reads `install.properties` line by line and checks each line's name before it keeps anything, so the client secrets and `SSL_CERT_PASS` in the same file are never kept, compared or sent back.
+
+The values are kept as they were given at install time, typing mistakes included: on one test connector the syslog host name had been mistyped when it was installed, and the registry and `install.properties` still held the mistyped name.
+
+### Discovery on real connectors
+
+**Observed** on 2026-11-23, with the final 1.5.0 build (orchestrator SHA-256 beginning `e6f62f331d1b`), when `-Mode Discover` was run read-only against ten 26.10.0.0 connectors in two forests (four tenants) over SSH from a macOS admin machine, from a scratch copy of the tool.
+
+- **The read script runs under Windows PowerShell 5.1 from standard input.** The SSH command is `powershell -NoProfile -NonInteractive -Command -` and the script is written to its standard input, so nothing is copied to the connector. On these connectors, whose SSH default shell is PowerShell 7, it ran under Windows PowerShell 5.1 and returned its one line of JSON every time. The script is one `& { ... }` block with no blank line inside it, followed by blank lines, because input on standard input runs as if typed and a blank line ends a block.
+- **Every row was complete.** Both drafts ended `0 need values filled in`.
+- **The es-config file is found by the tenant's name.** Configuration files were matched by the tenant's full host name in the file name and, for one tenant, by its first name part, with the `check it` note.
+- **The PFX is found by the served certificate.** On the Kerberos Auth connectors, the certificate the service served named a `.pfx` in the `ChildCerts` of the staging folder used, so `Pfx` was filled without opening any PFX. Each forest's staging folder holds only its own PFX, so from one forest's staging folder the other forest's PFX was taken from the connector's fleet entry and noted.
+- **The service account and the syslog target** were read from the connectors.
+- **The installer and the trust folder come from the fleet entry.** The staging folders used hold more than one installer, so `Installer` and `InstallerVersion` were taken from each connector's fleet entry and noted (`taken from fleet entry`). `TrustStore` was taken from the fleet entries too: an entry's own `TrustStore` wins over the generic `TrustedCerts` match, which has run in offline tests only. For a connector that is not in a fleet file, the installer columns are left for you to fill in.
+- **Imported back,** with `-ImportFleet` into scratch copies of the two hand-written fleet files, every connector had the same settings as those files: installer, installer version, configuration file, PFX, trust folder, services, service account, syslog target, ports, proxy, install folder and FIPS mode. There were two exceptions. `ExpectVersionPrefix` was blank, because discovery leaves it blank by design; the import's dry run named it for every group (`the current fleet file sets ExpectVersionPrefix, which the spreadsheet leaves blank`). And one connector's syslog host name had been mistyped on that connector at its original installation (above): a real difference, noted `differs from fleet entry ...: Syslog`. That connector was drafted as `<entry>-2`, and the other connector of the entry, installed correctly, kept the entry's name, because the row closest to its fleet entry keeps the name.
+- **A partial read starts its own fleet file.** With `-Tenant` naming one group of a fleet file that has two, the warning said `Only part of <file> was read (2 of its connectors left out)`, and Discover wrote a new fleet file beside it holding the original's top-level settings (`JavaPatchDir`, `StagingRoot`) and no groups. The import the run showed went into that file without `-Yes`, because a file with no groups has nothing to lose (its copy was still made), and wrote the group with those settings kept.
+
+## Excel and CSV files
+
+**Known Excel behaviour**, which the spreadsheet import (`-ImportFleet`) and `-Mode Discover` were built around. It has not been tried with every Excel version or regional setting.
+
+- **`26.10` becomes `26.1`.** A version typed into a cell formatted as General or Number is stored as a number, and the trailing zero is lost. The same happens to a CSV file each time Excel opens it, quotes or not. So the template's `Fleet` sheet is formatted as Text, the import compares `ExpectVersionPrefix` with `InstallerVersion` and warns about a lone prefix like `26.1`, and Discover leaves `ExpectVersionPrefix` blank and writes `InstallerVersion` with four parts (`26.10.0.0`, which is not a number to Excel), also when it takes the version from a fleet entry that gives it as `26.10`.
+- **Semicolons.** Excel separates the fields of a CSV file with the list separator of the regional settings. Where the comma is the decimal separator, that is `;`. The import takes the delimiter from the header line (tab, else the more frequent of `;` and `,`). The other way round, Excel with `;` as its list separator does not split a comma-separated file when it opens it: each row lands in one cell. Data > From Text/CSV, with the comma chosen as the delimiter, opens Discover's draft in columns.
+- **The byte-order mark.** Excel reads a CSV file as UTF-8 only when it starts with a UTF-8 byte-order mark; without one it uses the computer's code page. Its "CSV UTF-8" format writes the mark; its plain "CSV" format writes the code page (Windows-1252 in Western settings). So Discover writes its CSV file with the mark, and the import reads a file without one as UTF-8 when it is valid UTF-8, else as Windows-1252.
+- **The `="..."` trick.** A field written as `="26.10"` is a formula whose result is the text `26.10`, a known way of making Excel keep a value as typed when it opens a CSV file. The import reads a cell holding it as `26.10`. In an `.xlsx` file a formula cell carries its last result, which is what the import reads.
+- **The first sheet.** An `.xlsx` file is a zip archive of XML parts. The first worksheet is the first one listed in `xl/workbook.xml`, which is not necessarily the part named `sheet1.xml`, so the import follows the workbook's own order. A sheet can be hidden (`state="hidden"` or `"veryHidden"` in that list) and still be first; the import passes over hidden sheets and names them. Text is usually held in a shared string table, sometimes as formatted runs; numbers are written with a dot whatever the regional settings.
+- **Error values.** A formula that fails shows an error such as `#N/A` or `#REF!`. In an `.xlsx` file that is an error cell (`t="e"`); saved as CSV it becomes the error's text. The import treats both as a problem rather than as a value.
+- **Line breaks in a cell.** Alt+Enter puts a line break inside a cell, which a CSV file carries inside a quoted field. The import accepts it in `Services` (one service per line) and refuses it elsewhere.
+- **Merged cells.** In a merged range only the top-left cell holds the value. The import gives the value of a cell merged down one column to each row of the merge.
+
+What has been read so far: workbooks made by LibreOffice and by the template builder, and CSV files written by the tool and by hand. A workbook saved by Microsoft Excel itself has not yet been imported (Validation Record).
+
 ## Running things on a connector remotely
 
 - **Long scripts cannot be sent with `-EncodedCommand`.** The Windows command line limit (8191 characters under cmd.exe) is reached quickly. Short commands use `-EncodedCommand`; anything longer is copied as a file and run with `-File`, or piped to `powershell -Command -` on standard input.
@@ -144,5 +197,5 @@ In the test environment two unrelated domains each had their own copy of the sta
 ## Dry runs and tests
 
 - A dry run really copies files and really runs the pre-flight checks on the connector. It is the right way to prove passwords before a change window. Until 1.4.1 it did not, on a connector already on the installer's version: the wrapper's same-version skip came before its checks, so `DryRunPassed` there proved nothing about the passwords. Since 1.4.1 the checks run first and the skip is reported as a note.
-- `-Mode Verify` copies the helper script to the connector. It is not purely read-only, so do not run it against a connector while another run is using the helper there.
+- `-Mode Verify` copies the helper script to the connector. It is not purely read-only, so do not run it against a connector while another run is using the helper there. `-Mode Discover` copies nothing: its read script goes over SSH on standard input and nothing is written on the connector.
 - For exercising the scheduled-task plumbing without a domain account, setting the environment variable `AC_UPGRADE_RUNAS_SYSTEM` makes a **dry run** use the SYSTEM account for the task. It is a test aid and is refused for real runs.
