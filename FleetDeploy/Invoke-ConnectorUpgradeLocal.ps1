@@ -34,7 +34,7 @@ param(
     [switch]$Help
 )
 
-$script:Version  = '1.4.0'
+$script:Version  = '1.4.1'
 $script:UiWidth  = 78
 $script:Name     = 'Invoke-ConnectorUpgradeLocal.ps1'
 $script:Started  = Get-Date
@@ -1411,8 +1411,11 @@ if ($domainOk -and $needSvc -and $job.ServiceAccount -and -not $asLocalSystem) {
 
 Say ("Running Install-AccessConnector.ps1 (installer {0}{1})..." -f $job.Installer, $(if ($job.DryRun) { ', DRY RUN' } else { '' }))
 $global:LASTEXITCODE = $null
+$script:RealRunNote = ''
 try {
     & $installScript @splat 2>&1 | ForEach-Object {
+        # the wrapper's dry run says when a real run would skip or refuse this connector
+        if ([string]$_ -match 'DRY RUN note: (.+)$') { $script:RealRunNote = $Matches[1].Trim() }
         $relayStyle = $script:ui.Text; if ($_ -is [System.Management.Automation.ErrorRecord]) { $relayStyle = $script:ui.Warn }
         Write-Host ($relayStyle + (Protect-Text ([string]$_)) + $script:ui.Reset) }
     $result.InstallerExit = $LASTEXITCODE
@@ -1442,7 +1445,7 @@ if (-not $installOk -and -not $job.DryRun -and $job.ExpectVersionPrefix) {
 }
 
 if ($job.DryRun) {
-    if ($installOk) { $result.Status = 'DryRunPassed' } else { $result.Status = 'DryRunFailed'; $result.Message = "pre-flight exit $($result.InstallerExit)" }
+    if ($installOk) { $result.Status = 'DryRunPassed'; if ($script:RealRunNote) { $result.Message = $script:RealRunNote } } else { $result.Status = 'DryRunFailed'; $result.Message = "pre-flight exit $($result.InstallerExit)" + $(if ($script:RealRunNote) { '; ' + $script:RealRunNote } else { '' }) }
     $result.After = Get-ConnectorState
     Write-Result -Result ([pscustomobject]$result) -LogDir $logDir
     if ($installOk) { Write-AuditEntry 'SUCCESS' 'dryrun' } else { Write-AuditEntry 'FAILED' 'dryrun' $result.Message }

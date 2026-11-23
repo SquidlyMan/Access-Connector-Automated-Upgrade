@@ -17,7 +17,7 @@ The tool is not tied to a connector version. It installs whichever installer fil
 - **Handles Kerberos Auth properly**: runs the install under a domain admin account so the keytab is rebuilt, checks the keytab, and puts your PFX certificate back after an upgrade (the vendor installer replaces it with a self-signed one).
 - **Repairs** an empty keytab (`-Mode RepairKeytab`) or a wrong certificate (`-Mode RepairCertificate`) without reinstalling.
 - **Reports** the state of every connector without changing anything (`-Mode Verify`).
-- **Rehearses** with `-DryRun`: copies the files and runs every pre-flight check, installs nothing.
+- **Rehearses** with `-DryRun`: copies the files and runs every pre-flight check on every connector, installs nothing, and says when a real run would skip a connector.
 - **Carries the installer settings** from the fleet file: install folder, FIPS mode, service ports and an outbound proxy.
 - **Protects passwords**: asked at hidden prompts, never stored, masked in all output, and removed from the vendor installer's own log after each install.
 
@@ -96,7 +96,7 @@ The repository is laid out as the staging folder the tool expects, so a clone is
 
 ## Status
 
-Version 1.4.0. The tool has upgraded, clean installed and repaired connectors in a lab of ten connectors across four tenants and two Active Directory forests. Some paths are built but not yet proven by a real run; they are listed plainly in the [Validation Record](docs/Validation-Record.md). Read it before relying on a path it marks as unproven.
+Version 1.4.1. The tool has upgraded, clean installed and repaired connectors in a lab of ten connectors across four tenants and two Active Directory forests. Some paths are built but not yet proven by a real run; they are listed plainly in the [Validation Record](docs/Validation-Record.md). Read it before relying on a path it marks as unproven.
 
 ## Licence
 

@@ -54,12 +54,13 @@ Server and tenant names are left out of this record on purpose.
 | Wrapper served-certificate check by TLS handshake (1.4.0) | The function was checked offline under PowerShell 7 against a local TLS server (thumbprint matched openssl's). The same method is proven under Windows PowerShell 5.1 in the helper. Not yet run inside the wrapper on a connector |
 | Wrapper keytab-log check limited to this run (1.4.0) | Checked offline with made-up logs (earlier failure ignored, newest result judged, failure in this run caught). Not yet run on a connector |
 | Orchestrator refusing Windows PowerShell 5.1 (1.4.0) | The check is the first statement after the notice; not run under 5.1 |
+| Version 1.4.1 | Dry runs always run the pre-flight checks and note a connector a real run would skip or refuse. Built; checked offline (parse, help width). Not yet run against a connector: a dry run of one Kerberos group and one group without Kerberos proves it. |
 | Version 1.4.0 | Run 2026-11-22: `-Mode Verify` from both staging copies (all connectors OK), and `-DryRun` over SSH for one four-service Kerberos group (through the scheduled task) and one three-service group (direct), both `DryRunPassed`. That proves the four-line secret hand-over, the task route and the new job file on real connectors, and that the FIPS check does not refuse a connector whose setting matches. Those connectors were already on the installer's version, so the wrapper skipped and its pre-flight checks did not run (see Known weaknesses). Not yet run: WinRM mode, a real install, any of the new settings set to a non-default value. |
 
 ## Known weaknesses
 
 - Fixed in 1.4.0, not yet proven on a connector: the wrapper's served-certificate comparison never fired under Windows PowerShell 5.1, and its keytab-log check read the first result line of the whole vendor log. The helper's own checks covered both before and still do.
-- A dry run against a connector already on the installer's version reports `DryRunPassed` without testing any password: the wrapper decides to skip before its pre-flight checks. Only a dry run against an older connector (or with `-ForceReinstall`) proves the passwords.
+- Fixed in 1.4.1, not yet proven on a connector: a dry run against a connector already on the installer's version reported `DryRunPassed` without testing any password, because the wrapper decided to skip before its pre-flight checks (seen on 1.4.0, four connectors). Since 1.4.1 the checks always run and the result notes that a real run would skip.
 - The Active Directory reachability test proves read access only, not that the account can create or reset the connector's account.
 - WinRM mode does not copy logs back and has no report or repair modes.
 - `-Mode Verify` copies the helper to the connector, so it is not strictly read-only.

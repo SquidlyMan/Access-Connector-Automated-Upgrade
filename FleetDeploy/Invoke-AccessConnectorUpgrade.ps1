@@ -40,7 +40,7 @@ $ErrorActionPreference = 'Stop'
 # 'pwsh -File' passes "A,B" as one string, so split comma lists here.
 if ($Tenant)    { $Tenant    = @($Tenant    | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
 if ($Connector) { $Connector = @($Connector | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
-$script:Version  = '1.4.0'
+$script:Version  = '1.4.1'
 $script:UiWidth  = 78
 $script:Name     = 'Invoke-AccessConnectorUpgrade.ps1'
 $script:Started  = Get-Date
@@ -258,7 +258,7 @@ function Show-Help {
     Write-UiParam '-Mode <name>' 'SSH, WinRM, Stage, Verify, RepairKeytab or RepairCertificate.'
     Write-UiParam '-Tenant <names>' 'Only these tenants (fleet order is kept).'
     Write-UiParam '-Connector <hosts>' 'Only these connector hosts.'
-    Write-UiParam '-DryRun' 'Stage, then run the installer pre-flight only. Nothing is installed.'
+    Write-UiParam '-DryRun' 'Stage, then run the installer pre-flight only. Nothing is installed. The pre-flight always runs, also on a connector a real run would skip (already on the installer version); the result then says that a real run would skip it.'
     Write-UiParam '-ForceReinstall' 'Same version: uninstall then fresh install.'
     Write-UiParam '-Reapply' 'RepairCertificate only: install the PFX certificate even when the connector already serves it, or when the certificate does not name the connector.'
     Write-UiParam '-SkipJavaPatch' 'Do not run the Java4Shell patch after the upgrade, even when the fleet file names its folder.'
@@ -1121,7 +1121,10 @@ foreach ($batch in $batches) {
             if (-not $r) { throw 'the connector returned no result (see the output above)' }
             $row.Status = $r.Status; $row.InstallerExit = $r.InstallerExit; $row.PatchExit = $r.PatchExit; $row.Message = $r.Message
             if ($r.Before) { $row.From = $r.Before.InstalledVersion }; if ($r.After) { $row.To = $r.After.InstalledVersion }
-            if ($r.Status -in 'Success','DryRunPassed') { Say ("$($x.Host): $($r.Status). " + (Format-State $r.After)) 'OK' }
+            if ($r.Status -in 'Success','DryRunPassed') {
+                Say ("$($x.Host): $($r.Status). " + (Format-State $r.After)) 'OK'
+                if ($r.Status -eq 'DryRunPassed' -and $r.Message) { Say ("$($x.Host): note - " + $r.Message) 'WARN' }
+            }
             else { Write-ErrorEntry "$($x.Host): $($r.Status) - $($r.Message)" 'upgrade' }
         } catch {
             $row.Status = 'Error'; $row.Message = Protect-Text $_.Exception.Message

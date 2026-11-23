@@ -29,6 +29,9 @@
 
     -DryRun runs pre-flight and prints the constructed command, then stops. A
     real run aborts before launching the installer if pre-flight hard-fails.
+    A dry run ALWAYS runs the pre-flight checks, also for a connector that a
+    real run would skip (already on the installer's version) or refuse (newer
+    than the installer), and then says so in a "DRY RUN note" line.
 
     Audit trail: every run writes a timestamped audit log to the log folder
     (see -LogPath), alongside the MSI verbose log. Errors are written to the
@@ -376,11 +379,14 @@ OPTIONS
   -ValidateServiceAccount   live AD bind to verify the service account password
                               (real auth attempt - wrong password can lock the account)
   -DryRun                   run pre-flight, write audit log, print command, exit
+                              (always runs pre-flight; notes when a real run
+                              would skip or refuse this connector)
   -Help                     this summary
 
 VERSION HANDLING (installed vs installer)
   older installed  -> upgrade
   same version     -> skip (no-op); -ForceReinstall does uninstall + fresh install
+                      (a -DryRun still runs pre-flight and notes the skip)
   newer installed  -> stop and log (no downgrade)
 
 SERVICES (stopped before install, started after)
@@ -981,16 +987,23 @@ try {
     Add-AuditRaw $header
     if ($logFolderCreated) { Write-Audit -Level INFO -Message "Created log folder: $LogPath" }
 
+    # A dry run always runs the pre-flight checks, so it proves the passwords and files even for a
+    # connector that a real run would skip or refuse; it then says what a real run would do.
+    $realRunNote = ''
     if ($blocked) {
-        Write-Audit -Level ERROR -Message "Installed version is newer than the installer - stopping. The connector will not be downgraded. No services were stopped and nothing was installed."
+        $realRunNote = "A real run would STOP here: the installed version ($installedVer) is newer than the installer ($installerVer), and the connector is not downgraded."
+        if ($DryRun) { Write-Audit -Level WARN -Message "$realRunNote The dry run carries on with the pre-flight checks." }
+        else { Write-Audit -Level ERROR -Message "Installed version is newer than the installer - stopping. The connector will not be downgraded. No services were stopped and nothing was installed." }
         $exitCode = 1
     }
     elseif ($skip) {
-        Write-Audit -Level INFO -Message "Same version already installed and -ForceReinstall not set - nothing to do. No services were touched. For cert/cred changes, use -ForceReinstall or the installer's modify flow."
+        $realRunNote = "A real run would SKIP this connector: it is already at $installerVer and -ForceReinstall is not set, so nothing would be installed. Add -ForceReinstall to uninstall it and install it fresh."
+        if ($DryRun) { Write-Audit -Level WARN -Message "$realRunNote The dry run carries on with the pre-flight checks." }
+        else { Write-Audit -Level INFO -Message "Same version already installed and -ForceReinstall not set - nothing to do. No services were touched. For cert/cred changes, use -ForceReinstall or the installer's modify flow." }
         $exitCode = 0
     }
 
-    if (-not $blocked -and -not $skip) {
+    if ($DryRun -or (-not $blocked -and -not $skip)) {
 
     # -- prompt for any missing secrets ------------------------------------
     if (-not $ConfigFilePassword) {
@@ -1148,11 +1161,17 @@ try {
 
     # -- execute or dry run ------------------------------------------------
     if ($DryRun) {
-        if ($preflightOk) {
+        if ($preflightOk -and $blocked) {
+            Write-Audit -Level ERROR -Message "DRY RUN complete - pre-flight passed, but $realRunNote Installer NOT executed; services not touched."
+            Write-Audit -Level WARN -Message "DRY RUN note: $realRunNote"
+            $exitCode = 1
+        } elseif ($preflightOk) {
             Write-Audit -Level OK -Message "DRY RUN complete - pre-flight passed. Planned action: $installAction. Installer NOT executed; services not touched."
+            if ($realRunNote) { Write-Audit -Level WARN -Message "DRY RUN note: $realRunNote" }
             $exitCode = 0
         } else {
             Write-Audit -Level ERROR -Message "DRY RUN complete - pre-flight FAILED. Fix the issues above before a real run."
+            if ($realRunNote) { Write-Audit -Level WARN -Message "DRY RUN note: $realRunNote" }
             $exitCode = 1
         }
     }

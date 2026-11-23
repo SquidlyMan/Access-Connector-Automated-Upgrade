@@ -259,6 +259,8 @@ Each connector gets one line: installed version, services running, and for Kerbe
 
 This copies the files and runs every pre-flight check: the PFX opens with the password you typed, the configuration file is valid, the service account password works, the domain admin account can start the task. Nothing is installed. Fix anything it reports and repeat until it says `DryRunPassed`.
 
+The checks run on every connector, also one that is already on the installer's version. A real run would skip such a connector, and the dry run says so in a note: "A real run would SKIP this connector". Add `-ForceReinstall` if you want it reinstalled.
+
 ### 8.3 The real run
 
 ```
