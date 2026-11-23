@@ -1,0 +1,40 @@
+# Nothing that is secret, licensed or site-specific belongs in this repository.
+
+# Site fleet files (keep only the example)
+FleetDeploy/fleet.psd1
+FleetDeploy/fleet.*.psd1
+!FleetDeploy/fleet.example.psd1
+
+# Run output
+FleetDeploy/FleetLogs/
+*.log
+logs/
+
+# Vendor installers and patches (download them from Omnissa)
+Installers/*
+!Installers/README.md
+
+# Tenant configuration files (hold a password hash and tenant details)
+Configs/*
+!Configs/README.md
+
+# Certificates and keys
+ChildCerts/*
+!ChildCerts/README.md
+TrustedCerts/*
+!TrustedCerts/README.md
+*.pfx
+*.p12
+*.key
+*.keytab
+*password*.txt
+
+# Backups and scratch copies
+*.bak
+*.bak-*
+*.new
+*.test.ps1
+
+# OS noise
+.DS_Store
+Thumbs.db
