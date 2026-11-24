@@ -43,7 +43,7 @@ $ErrorActionPreference = 'Stop'
 # 'pwsh -File' passes "A,B" as one string, so split comma lists here.
 if ($Tenant)    { $Tenant    = @($Tenant    | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
 if ($Connector) { $Connector = @($Connector | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
-$script:Version  = '1.5.0'
+$script:Version  = '1.5.1'
 $script:UiWidth  = 78
 $script:Name     = 'Invoke-AccessConnectorUpgrade.ps1'
 $script:Started  = Get-Date
@@ -247,6 +247,7 @@ function Show-Help {
     Write-UiSection 'DESCRIPTION'
     Write-UiText 'Reads a fleet file (.psd1) listing tenants and their connectors. For each connector it copies the installer, the tenant config file, the trust certificates, the Kerberos PFX and the patch to local disk on the connector, then runs Invoke-ConnectorUpgradeLocal.ps1 there. That helper runs Install-AccessConnector.ps1, the vendor patch script and a health check.'
     Write-UiText 'Passwords are asked once per tenant at hidden prompts. In SSH mode they travel inside the SSH session on standard input; they are never placed on a command line by this script, in the fleet file or in a log. (The vendor installer itself receives them on its own command line on the connector and records them, base64-encoded, in its own log; that is an installer limitation. This tool replaces them with asterisks in that log after every install.)'
+    Write-UiText 'Before anything is asked, an upgrade or dry run over SSH and the two repair modes check the SSH sign-in on every selected connector. When one fails, the run stops there with exit code 1: each failing connector is named with SSH''s own reason and, when that reason suggests one, a hint; nothing is changed and no password is asked.'
     Write-UiSection 'INSTALLER SETTINGS FROM THE FLEET FILE'
     Write-UiText 'Besides the services, certificates, service account and syslog target, a fleet entry can set the install folder (InstallDir), FIPS mode (EnableFips), the four service ports (DirectorySyncPort, UserAuthPort, KerberosAuthPort, VirtualAppPort) and an outbound proxy (ProxyHost, ProxyPort, ProxyUser, NonProxyHosts). They are checked before any connector is contacted and shown in the plan. When ProxyUser is set, the proxy password is asked at run time with the others. A misspelt setting is named in a note.'
     Write-UiSection 'BUILDING THE FLEET FILE FROM A SPREADSHEET'
@@ -258,7 +259,7 @@ function Show-Help {
     Write-UiText 'The installer, config file, certificates and PFX are looked for beside the folder this script is run from. When a tenant''s files are not there, the run stops before anything is contacted and the error names another copy of the folder that has them, with the cd command to use. Other copies are looked for on every mounted volume (macOS) or drive (Windows): at this folder''s own path, and at each path listed under StagingFolders in the fleet file.'
     Write-UiSection 'MODES'
     Write-UiParam 'SSH (default)' 'Runs from macOS, Linux or Windows using ssh and scp with key sign-in. Connectors without the Kerberos service: the installer runs as the SSH account. Kerberos connectors: it runs on the connector as a one-time scheduled task under a domain admin account you are asked for (see -RunAsCredential), because only a full sign-in can rebuild the keytab.'
-    Write-UiParam 'WinRM' 'Runs from Windows over PowerShell remoting with a domain credential per tenant. Kerberos connectors use the same scheduled task with that sign-in, or run directly with -Authentication CredSSP.'
+    Write-UiParam 'WinRM' 'Runs from Windows over PowerShell remoting with a domain credential per tenant. Kerberos connectors use the same scheduled task with that sign-in, or run directly with -Authentication CredSSP. A sign-in that a connector refuses (a wrong user name or password, say) stops that tenant, and the run unless -ContinueOtherTenants, in a dry run too.'
     Write-UiParam 'Stage' 'Copies everything and writes Run-Upgrade.cmd on each connector. You then sign in to the connector as a domain admin and run it, or schedule it with -Schedule on the helper. No passwords are asked here.'
     Write-UiParam 'Verify' 'Changes nothing. Reports version, services and patch state for each connector over SSH.'
     Write-UiParam 'RepairKeytab' 'Installs nothing. On each Kerberos connector, over SSH, runs the vendor setupKerberos.ps1 as a one-time scheduled task under a domain admin account, then restarts the Kerberos service. Use it when Verify shows keytab EMPTY. With -DryRun it only tests the sign-in.'
@@ -281,7 +282,7 @@ function Show-Help {
     Write-UiParam '-Credential <cred>' 'WinRM only: one credential for every tenant. Default: asked per tenant.'
     Write-UiParam '-RunAsCredential <c>' 'Kerberos connectors: the domain admin account the upgrade runs under on each connector, as a one-time scheduled task, so the Kerberos keytab can be rebuilt. Default: asked per tenant in SSH mode; WinRM mode reuses its sign-in.'
     Write-UiParam '-Authentication <a>' 'WinRM only: Negotiate (default), Kerberos, CredSSP or Default.'
-    Write-UiParam '-Parallel' 'Upgrade every selected connector at the same time. Fastest, but each tenant is fully offline while it runs and a failure cannot stop the others.'
+    Write-UiParam '-Parallel' 'Upgrade every selected connector at the same time. Fastest, but each tenant is fully offline while it runs and a failure cannot stop the others, except a WinRM sign-in that a connector refuses: the connectors not yet started are then left alone.'
     Write-UiParam '-ParallelTenants' 'Run tenants side by side, still one connector at a time inside each tenant, so every tenant with two or more connectors keeps one online.'
     Write-UiParam '-ContinueOtherTenants' 'After a failure, stop that tenant but carry on with the others. Default: stop everything.'
     Write-UiParam '-Yes' 'Do not ask for confirmation before changing connectors.'
@@ -334,6 +335,7 @@ function Show-Help {
     Write-UiSection 'OUTPUT'
     Write-UiText 'A per-connector line on screen, a summary grouped by tenant, a CSV, and each connector''s logs copied to the central log folder named in the fleet file. Screen output is wrapped to the divider width; the logs keep the original unwrapped lines. Exit code 0 when every selected connector succeeded, otherwise 1.'
     Write-UiText '-ImportFleet writes the fleet file (and keeps a replaced one as <file>.bak-<date>); exit code 0 when it was written, or with -DryRun when the spreadsheet is usable, otherwise 1. -Mode Discover writes the draft spreadsheet; exit code 1 when any host could not be read.'
+    Write-UiText '-Mode Verify: exit code 1 when a connector could not be read or its line is red (a service not running, the Kerberos keytab empty or missing, or, for a group with a Pfx, a certificate that is not a proper one), with an error-log entry for each red connector naming what is red. Yellow lines (nothing installed, a Java process without the patch flag) keep exit code 0.'
     Write-UiSection 'LOGGING'
     Write-UiText 'Audit log (-AuditLog): one appended key=value line per run saying who ran what and the outcome. Error log (-ErrorLog): the detail of each failure. Passwords are masked everywhere, including in the vendor installer logs copied back from each connector.'
     Write-UiSection 'REQUIREMENTS'
@@ -382,9 +384,10 @@ function Say { param([string]$Message, [string]$Level = 'INFO')
         foreach ($l in (Get-HangingLines -Text $text -Hang $hang)) { Write-Host ($c + $l + $script:ui.Reset) }
     }
 }
-function Write-ErrorEntry { param([string]$Message, [string]$Stage, [System.Management.Automation.ErrorRecord]$Record)
+function Write-ErrorEntry { param([string]$Message, [string]$Stage, [System.Management.Automation.ErrorRecord]$Record, [switch]$LogOnly)
+    # -LogOnly: the error log only, for a failure the screen already shows in its own way
     $m = Protect-Text $Message
-    Say $m 'ERROR'
+    if (-not $LogOnly) { Say $m 'ERROR' }
     if (-not $script:ErrorPath) { return }
     $stamp = (Get-Date).ToString('o')
     $m = (($m.Trim()) -replace ':\s*\r?\n\s*', ': ') -replace '\s*\r?\n\s*', ' | '   # one line in the log
@@ -490,13 +493,179 @@ function Get-SshBaseArgs {
     if ($SshKey) { $a += @('-i', $SshKey) }
     return $a }
 function Get-SshTarget { param($Conn) "$($Conn.SshUser)@$($Conn.Host)" }
-function Invoke-SshPs { param($Conn, [string]$ScriptText)
-    # Runs a short Windows PowerShell script on the connector; returns stdout lines.
+function ConvertFrom-RemoteErrorText { param([string]$Text)
+    # The messages in what ssh passed on from standard error, one per line, trimmed: ssh's own
+    # lines as they are, and the text of each error record Windows PowerShell sent as CLIXML (a
+    # '#< CLIXML' line, then '<Objs ...>'), without the position lines PowerShell puts under an
+    # error. Progress records and terminal colour codes are dropped.
+    $esc = [string][char]27
+    $out = [System.Collections.Generic.List[string]]::new()
+    foreach ($l in ([string]$Text -split '\r\n|\r|\n')) {
+        $t = ($l -replace "$esc\[[0-9;?]*[A-Za-z]", '').Trim()
+        if (-not $t -or $t -eq '#< CLIXML') { continue }
+        if ($t -notmatch '^<Objs ') { $out.Add($t); continue }
+        foreach ($m in [regex]::Matches($t, '<S S="Error">(.*?)</S>')) {
+            $v = [System.Net.WebUtility]::HtmlDecode($m.Groups[1].Value)
+            try { $v = [System.Xml.XmlConvert]::DecodeName($v) } catch { }
+            foreach ($vl in (($v -replace "$esc\[[0-9;?]*[A-Za-z]", '') -split '\r\n|\r|\n')) {
+                $vt = $vl.Trim()
+                if ($vt -and $vt -notmatch '^(At line:\d+ char:\d+|At \S.*:\d+ char:\d+|\+( |$))') { $out.Add($vt) }
+            }
+        }
+    }
+    return $out.ToArray() }
+function Invoke-SshPs { param($Conn, [string]$ScriptText, [int]$TimeoutSec = 0)
+    # Runs a short Windows PowerShell script on the connector; nothing is sent on standard input.
+    # Returns ExitCode (ssh's own: 255 when ssh could not connect or sign in, otherwise the remote
+    # one; $null when ssh could not be run or was stopped), Lines (standard output, CLIXML records
+    # dropped, as before), Errors (standard error through ConvertFrom-RemoteErrorText: ssh's own
+    # reason, or the remote error) and TimedOut. With -TimeoutSec, ssh is stopped after that long.
     $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes("`$ProgressPreference='SilentlyContinue';" + $ScriptText))
-    $out = & ssh @(Get-SshBaseArgs) (Get-SshTarget $Conn) "powershell -NoProfile -EncodedCommand $enc" 2>$null
-    $code = $LASTEXITCODE
-    $lines = @($out | Where-Object { $_ -notmatch '^#< CLIXML|^<Objs ' })
-    return [pscustomobject]@{ ExitCode = $code; Lines = $lines } }
+    $res = [pscustomobject]@{ ExitCode = $null; Lines = @(); Errors = @(); TimedOut = $false }
+    $p = $null
+    try {
+        $psi = [System.Diagnostics.ProcessStartInfo]::new('ssh')
+        foreach ($x in (Get-SshBaseArgs)) { $psi.ArgumentList.Add($x) }
+        $psi.ArgumentList.Add((Get-SshTarget $Conn))
+        $psi.ArgumentList.Add("powershell -NoProfile -EncodedCommand $enc")
+        $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true; $psi.UseShellExecute = $false
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $outTask = $p.StandardOutput.ReadToEndAsync(); $errTask = $p.StandardError.ReadToEndAsync()
+        try { $p.StandardInput.Close() } catch { }
+        if ($TimeoutSec -gt 0) {
+            if (-not $p.WaitForExit($TimeoutSec * 1000)) { $res.TimedOut = $true; try { $p.Kill($true) } catch { }; try { $null = $p.WaitForExit(5000) } catch { } }
+        } else { $p.WaitForExit() }
+        $outText = ''; $errText = ''
+        try { if ($outTask.Wait(10000)) { $outText = [string]$outTask.Result } } catch { }
+        try { if ($errTask.Wait(10000)) { $errText = [string]$errTask.Result } } catch { }
+        if (-not $res.TimedOut) { $res.ExitCode = $p.ExitCode }
+        # the lines as PowerShell would have captured them: no empty line for the last line break
+        $lines = [System.Collections.Generic.List[string]]::new()
+        foreach ($l in ($outText -split '\r\n|\r|\n')) { $lines.Add($l) }
+        if ($lines.Count -and $lines[$lines.Count - 1] -eq '') { $lines.RemoveAt($lines.Count - 1) }
+        $res.Lines = @($lines | Where-Object { $_ -notmatch '^#< CLIXML|^<Objs ' })
+        $errs = @(ConvertFrom-RemoteErrorText $errText)
+        if ($res.TimedOut) { $errs = @("no answer within $TimeoutSec seconds") + $errs }
+        $res.Errors = $errs
+    } catch {
+        $res.Errors = @('ssh could not be run: ' + ([string]$_.Exception.Message -replace '\s+', ' ').Trim())
+    } finally { if ($p) { try { $p.Dispose() } catch { } } }
+    return $res }
+function Get-SshHint { param([string]$Reason, [string]$User, [string]$HostName, [string]$KeyFile)
+    # A short hint for an SSH failure, chosen from ssh's own reason; '' when none fits. Used by
+    # every report of an SSH failure: the first SSH step, the sign-in check before the prompts and
+    # -Mode Discover. $KeyFile: the -SshKey of the run, if any.
+    $r = [string]$Reason
+    $u = if ($User) { $User } else { 'administrator' }
+    $k = if ([string]$KeyFile -match '\s') { "'$KeyFile'" } else { [string]$KeyFile }
+    # user@host for the test command, in single quotes when a shell would change it: zsh and bash
+    # drop the backslash of a domain account (EXAMPLE\admin) that is not quoted
+    $t = "$u@$HostName"
+    if ($t -match '[\\\s''"]') { $t = "'" + ($t -replace "'", "'\''") + "'" }
+    if ($r -match 'Too many authentication failures') {
+        if ($KeyFile) { return 'too many keys were offered before the one named with -SshKey: set IdentitiesOnly yes for these hosts in the SSH settings file (Getting Started 4.7).' }
+        return 'too many keys were offered: name the key with -SshKey, or set IdentitiesOnly for these hosts.' }
+    if ($r -match 'Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED') {
+        return "the connector's host key changed: remove the old one with ssh-keygen -R $HostName and check the new one (Getting Started 4.6)." }
+    if ($r -match 'Permission denied') {
+        if ($KeyFile) { return "the key $k was not accepted: check that its public key is authorised on the connector (Getting Started 4.4); test by hand with ssh -i $k $t hostname." }
+        return "the key was not accepted: name it with -SshKey <file>, or add an IdentityFile line for these hosts to the SSH settings file (Getting Started 4.7); test by hand with ssh $t hostname." }
+    if ($r -match 'Could not resolve hostname') { return 'the name does not resolve from this machine.' }
+    if ($r -match 'Connection timed out|Operation timed out|Connection refused|No route to host') {
+        $port = if ($r -match '\bport (\d+)\b') { $Matches[1] } else { '22' }
+        return "port $port is not reachable from this machine (firewall, or OpenSSH Server not running)." }
+    return '' }
+function Add-SshHint { param([string]$Message, [string]$Hint)
+    # '<message>. Hint: <hint>', or the message alone when there is no hint
+    if (-not $Hint) { return $Message }
+    $m = $Message.TrimEnd()
+    return $m + $(if ($m -match '[.!?]$') { '' } else { '.' }) + ' Hint: ' + $Hint }
+function Get-SshStepError { param($Conn, $Result, [string]$What, [string]$KeyFile)
+    # One line, masked, for an Invoke-SshPs step that did not work, told apart by what came back
+    # on standard output:
+    # - nothing, and ssh could not be run, ended with exit code 255 or ran out of time: ssh did not
+    #   connect or sign in. 'cannot reach <host> over SSH: <ssh's own reason>', with a hint when
+    #   the reason suggests one.
+    # - the step's own success line ('ok', 'signin-ok'), but ssh still failed (the session dropped
+    #   after the script had finished, say): 'signed in to <host> over SSH and the step answered,
+    #   but ssh then ended with exit code <n>: <reason>', or '... but the session did not end
+    #   within <n> seconds'.
+    # - anything else: ssh signed in and the script failed. 'signed in to <host> over SSH, but
+    #   could not <What>: <the remote error>'.
+    $h = [string]$Conn.Host
+    $marks = @('ok', 'signin-ok')
+    $lines = @(@($Result.Lines) | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
+    # each line once (a script that fails the same way for each of several folders repeats itself)
+    $seen = [System.Collections.Generic.HashSet[string]]::new()
+    $out = @($lines | Where-Object { $_ -notin $marks -and $seen.Add($_) })
+    $errs = @(@($Result.Errors) | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -and $seen.Add($_) })
+    $answered = @($lines | Where-Object { $_ -in $marks }).Count -gt 0
+    $notRun = ($null -eq $Result.ExitCode) -and (-not $Result.TimedOut)
+    if ($notRun -or ((($Result.TimedOut) -or ($Result.ExitCode -eq 255)) -and ($lines.Count -eq 0))) {
+        $why = $errs -join ' / '
+        if (-not $why) { $why = $(if ($null -ne $Result.ExitCode) { "ssh ended with exit code $($Result.ExitCode) and gave no reason" } else { 'ssh gave no reason' }) }
+        if ($why.Length -gt 500) { $why = $why.Substring(0, 500) + ' ...' }
+        $msg = Add-SshHint "cannot reach $h over SSH: $why" (Get-SshHint -Reason $why -User ([string]$Conn.SshUser) -HostName $h -KeyFile $KeyFile)
+    } elseif ($answered) {
+        # Invoke-SshPs puts 'no answer within <n> seconds' first after a timeout: not so here
+        $limit = ''
+        $rest = @(foreach ($e in @($errs + $out)) { if ($e -match '^no answer within (\d+) seconds$') { $limit = $Matches[1] } else { $e } })
+        $why = $rest -join ' / '
+        if ($why.Length -gt 500) { $why = $why.Substring(0, 500) + ' ...' }
+        if ($Result.TimedOut) {
+            $msg = "signed in to $h over SSH and the step answered, but the session did not end " + $(if ($limit) { "within $limit seconds" } else { 'in the time allowed' }) + $(if ($why) { ": $why" } else { '' })
+        } else {
+            $msg = "signed in to $h over SSH and the step answered, but ssh then ended with exit code $($Result.ExitCode)" + $(if ($why) { ": $why" } else { ' and gave no reason' })
+        }
+    } else {
+        $detail = @($errs + $out) -join ' / '
+        if ($detail.Length -gt 500) { $detail = $detail.Substring(0, 500) + ' ...' }
+        if (-not $detail) { $detail = "the connector did not confirm it (exit code $($Result.ExitCode))" }
+        $msg = "signed in to $h over SSH, but could not ${What}: $detail"
+    }
+    return (Protect-Text $msg) }
+function Test-SshSignInCheckNeeded { param([string]$Mode)
+    # True for the modes that check the SSH sign-in on every selected connector right after the
+    # plan, before YES and before any password or account is asked: the ones that go on to ask
+    # (an upgrade or dry run over SSH, and the two repair modes). WinRM signs in its own way;
+    # Stage and Verify ask nothing; Discover and -ImportFleet end before this point.
+    return ($Mode -in 'SSH','RepairKeytab','RepairCertificate') }
+function Test-WinRMSignInRefused { param($Failure)
+    # True when a WinRM session (New-PSSession) could not be opened because the connector refused
+    # the sign-in: access denied, a logon failure (a wrong user name or password), or an account
+    # that is locked out, disabled or has an expired password. False when the connector was not
+    # reached (name, network, firewall, WinRM not listening) and for anything else. $Failure is an
+    # ErrorRecord, an exception or a message.
+    if ($null -eq $Failure) { return $false }
+    $codes = @(5, 1326, 1327, 1330, 1331, 1907, 1909)
+    $words = 'access is denied|access denied|logon failure|logon attempt failed|user name or password is incorrect|unknown user name or bad password|account is currently locked out|referenced account is currently locked|account is currently disabled|password has expired|password must be changed'
+    $texts = [System.Collections.Generic.List[string]]::new()
+    $ex = $null
+    if ($Failure -is [System.Management.Automation.ErrorRecord]) {
+        if ([string]$Failure.FullyQualifiedErrorId -match '^(AccessDenied|LogonFailure)\b') { return $true }
+        if ($Failure.ErrorDetails -and $Failure.ErrorDetails.Message) { $texts.Add([string]$Failure.ErrorDetails.Message) }
+        $ex = $Failure.Exception
+    }
+    elseif ($Failure -is [System.Exception]) { $ex = $Failure }
+    else { $texts.Add([string]$Failure) }
+    for ($i = 0; $ex -and $i -lt 10; $i++) {
+        if ($ex -is [System.Management.Automation.Remoting.PSRemotingTransportException] -and ([int]$ex.ErrorCode -in $codes)) { return $true }
+        $texts.Add([string]$ex.Message)
+        $ex = $ex.InnerException
+    }
+    foreach ($t in $texts) { if ($t -match $words) { return $true } }
+    return $false }
+function Get-WinRMSignInReason { param($Failure)
+    # The connector's own reason in a failed New-PSSession, without the remoting boilerplate.
+    $m = ''
+    if ($Failure -is [System.Management.Automation.ErrorRecord]) { $m = $(if ($Failure.ErrorDetails -and $Failure.ErrorDetails.Message) { [string]$Failure.ErrorDetails.Message } else { [string]$Failure.Exception.Message }) }
+    elseif ($Failure -is [System.Exception]) { $m = [string]$Failure.Message }
+    else { $m = [string]$Failure }
+    $m = ($m -replace '\s+', ' ').Trim()
+    $m = $m -replace '^\[[^\]]+\]\s*', ''
+    $m = $m -replace '^Connecting to remote server \S+ failed with the following error message ?: ?', ''
+    $m = $m -replace '\s*For more information, see the about_Remote_Troubleshooting Help topic\.?$', ''
+    return $m.Trim() }
 function Copy-ScpTo { param($Conn, [string[]]$LocalFiles, [string]$RemoteDir)
     $dest = (Get-SshTarget $Conn) + ':' + ($RemoteDir -replace '\\', '/') + '/'
     & scp -q @(Get-SshBaseArgs) @LocalFiles $dest 2>$null
@@ -570,9 +739,10 @@ function New-JobJson { param($T)
     return $f }
 function Send-PayloadSsh { param($Conn, $T, [switch]$RunnerOnly, [string[]]$Also = @())
     # The folder holds scripts that run with high privilege, so only Administrators and SYSTEM may use it.
-    $mk = "foreach(`$d in '$RemoteStageDir','$RemoteStageDir\Logs','$RemoteStageDir\TrustedCerts','$RemoteStageDir\Java4shellPatch'){if(-not(Test-Path `$d)){`$null=New-Item -ItemType Directory -Path `$d -Force}}; if((Split-Path -Leaf '$RemoteStageDir') -eq 'AccessConnectorUpdate'){`$null = & icacls.exe '$RemoteStageDir' /inheritance:r /grant:r '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-18:(OI)(CI)F' /Q 2>&1}; 'ok'"
+    # 'ok' only when the folders are there: New-Item failing (access denied, say) does not stop the script.
+    $mk = "`$dirs='$RemoteStageDir','$RemoteStageDir\Logs','$RemoteStageDir\TrustedCerts','$RemoteStageDir\Java4shellPatch'; foreach(`$d in `$dirs){if(-not(Test-Path `$d)){`$null=New-Item -ItemType Directory -Path `$d -Force}}; if((Split-Path -Leaf '$RemoteStageDir') -eq 'AccessConnectorUpdate'){`$null = & icacls.exe '$RemoteStageDir' /inheritance:r /grant:r '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-18:(OI)(CI)F' /Q 2>&1}; `$miss=@(`$dirs | Where-Object { -not (Test-Path -LiteralPath `$_ -PathType Container) }); if(`$miss.Count){'not made: ' + (`$miss -join ', ')}else{'ok'}"
     $r = Invoke-SshPs $Conn $mk
-    if ($r.ExitCode -ne 0 -or ($r.Lines -notcontains 'ok')) { throw "cannot reach $($Conn.Host) over SSH or create $RemoteStageDir" }
+    if ($r.ExitCode -ne 0 -or ($r.Lines -notcontains 'ok')) { throw (Get-SshStepError -Conn $Conn -Result $r -What "create $RemoteStageDir" -KeyFile $SshKey) }
     if ($RunnerOnly) { Copy-ScpTo $Conn (@((Join-Path $script:Here 'Invoke-ConnectorUpgradeLocal.ps1')) + @($Also)) $RemoteStageDir; return }
     $payload = Get-Payload $T
     foreach ($sub in $payload.Keys) {
@@ -634,6 +804,22 @@ function Format-Cert { param($C)
     if (-not $C.NamesServer) { return "DOES NOT NAME THIS SERVER ('$($C.Subject)' from '$($C.Issuer)')" }
     if ($C.NotAfter -and ([string]$C.NotAfter -lt (Get-Date -Format 'yyyy-MM-dd'))) { return "EXPIRED $($C.NotAfter) ('$($C.Subject)')" }
     return "ok ('$($C.Subject)' from '$($C.Issuer)', to $($C.NotAfter))" }
+function Get-VerifyVerdict { param($State, [bool]$HasPfx)
+    # -Mode Verify: the colour of a connector's line, and what makes it red. Red (Level ERROR) when
+    # a service is not running, when Kerberos Auth is installed and its keytab is empty or missing,
+    # or, for a group with a Pfx, when the certificate served is not a proper one. Yellow (WARN)
+    # when nothing is installed or a Java process lacks the patch flag. Green (OK) otherwise.
+    # A red line makes the run's exit code 1; Red names each red item.
+    $svcs = @($State.Services)
+    $red = [System.Collections.Generic.List[string]]::new()
+    $down = @($svcs | Where-Object { $_.Status -ne 'Running' } | ForEach-Object { ($_.Key -replace 'Service$', '') + '=' + $_.Status })
+    if ($down.Count) { $red.Add('not running: ' + ($down -join ', ')) }
+    if (@($svcs | Where-Object { $_.Key -eq 'KerberosAuthService' }).Count -and [int]$State.KeytabBytes -lt 32) {
+        $red.Add($(if ([int]$State.KeytabBytes -ge 0) { "keytab EMPTY ($($State.KeytabBytes) bytes)" } else { 'keytab missing' })) }
+    # with no Pfx the installer's own certificate is what is meant to be there
+    if ($HasPfx -and (Test-CertBad $State.Cert)) { $red.Add('certificate ' + (Format-Cert $State.Cert)) }
+    $level = if ($red.Count) { 'ERROR' } elseif ($svcs.Count -eq 0 -or [int]$State.JavaWithFlag -lt [int]$State.JavaCount) { 'WARN' } else { 'OK' }
+    return [pscustomobject]@{ Level = $level; Red = @($red) } }
 
 $script:TenantKeys = @('Name','Installer','InstallerVersion','ExpectVersionPrefix','ConfigFile','TrustStore','Pfx','Services',
     'ServiceAccount','Syslog','ForceReinstall','Connectors','InstallDir','EnableFips','DirectorySyncPort','UserAuthPort',
@@ -2280,7 +2466,11 @@ function Invoke-FleetDiscover { param([string]$FleetFile, [string]$FleetWhy)
             $errs = @(@($d.Errors) | Where-Object { $_ })
             if ($errs.Count) { Say ("{0}`n{1}`nnot read: {2}" -f $x.Host, ($parts -join ' | '), ($errs -join ' / ')) 'WARN' }
             else { Say ("{0}`n{1}" -f $x.Host, ($parts -join ' | ')) 'OK' }
-        } else { $bad++; Write-ErrorEntry ("$($x.Host): not reached: " + $(if ($r.Error) { $r.Error } else { 'no result' })) 'discover' }
+        } else {
+            $bad++
+            $why = if ($r.Error) { [string]$r.Error } else { 'no result' }
+            Write-ErrorEntry (Add-SshHint "$($x.Host): not reached: $why" (Get-SshHint -Reason $why -User $u -HostName $x.Host -KeyFile $SshKey)) 'discover'
+        }
     }
     $root = $script:StagingRoot
     $rows = @(ConvertTo-DiscoveredRows -Results $results -StagingRoot $root -SshUser $SshUser)
@@ -2376,7 +2566,7 @@ if ($Mode -eq 'Stage')  { foreach ($n in 'Yes','ContinueOtherTenants') { if ($sc
 if ($Mode -in 'Verify','Stage') { foreach ($n in 'Parallel','ParallelTenants') { if ($script:Supplied.Contains($n)) { $warn.Add("[ignored] -$n has no effect with -Mode $Mode.") } } }
 if ($Fleet -and $script:Supplied.Contains('FleetConfig')) { $warn.Add('[ignored] -Fleet: -FleetConfig names the file directly.') }
 if ($Parallel -and $ParallelTenants) { $warn.Add('[ignored] -ParallelTenants: -Parallel already runs every selected connector at once.') }
-if ($Parallel -and $ContinueOtherTenants) { $warn.Add('[ignored] -ContinueOtherTenants: with -Parallel everything starts together, so there is nothing left to stop.') }
+if ($Parallel -and $ContinueOtherTenants) { $warn.Add('[ignored] -ContinueOtherTenants: with -Parallel everything starts together, so there is nothing left to stop; a WinRM sign-in that a connector refuses stops every connector not yet started.') }
 if ($DryRun -and $ForceReinstall) { $warn.Add('[note] -ForceReinstall with -DryRun only changes the planned action shown; nothing is uninstalled.') }
 if ($Mode -eq 'Discover') { foreach ($n in 'DryRun','ForceReinstall','SkipJavaPatch','SkipDomainCheck','Yes','ContinueOtherTenants','Parallel','ParallelTenants','RunAsCredential','RemoteStageDir') { if ($script:Supplied.Contains($n)) { $warn.Add("[ignored] -$n has no effect with -Mode Discover.") } } }
 if ($Mode -ne 'Discover' -and $script:Supplied.Contains('ExportCsv')) { $warn.Add('[ignored] -ExportCsv applies only to -Mode Discover.') }
@@ -2523,25 +2713,24 @@ Write-UiBlank
 
 # =================================================================== VERIFY
 if ($Mode -eq 'Verify') {
-    $bad = 0
+    $bad = 0; $redCount = 0
     foreach ($x in $plan) {
         try {
             Send-PayloadSsh -Conn $x -T $x.Tenant -RunnerOnly
             $r = Invoke-SshRunner -Conn $x -RunnerArgs '-VerifyOnly' -StdinLines @()
             if ($r.Result) {
-                # Colour only: red when a service is not running, yellow when nothing is installed
-                # or a Java process lacks the patch flag, green otherwise. The exit code is unchanged.
-                $vs = $r.Result.State; $lvl = 'OK'
-                if (@($vs.Services | Where-Object { $_.Status -ne 'Running' }).Count) { $lvl = 'ERROR' }
-                elseif (@($vs.Services | Where-Object { $_.Key -eq 'KerberosAuthService' }).Count -and [int]$vs.KeytabBytes -lt 32) { $lvl = 'ERROR' }
-                elseif ($x.Tenant.Pfx -and (Test-CertBad $vs.Cert)) { $lvl = 'ERROR' }   # with no Pfx the installer's own certificate is what is meant to be there
-                elseif (@($vs.Services).Count -eq 0 -or [int]$vs.JavaWithFlag -lt [int]$vs.JavaCount) { $lvl = 'WARN' }
-                Say ("{0,-14} {1}`n{2}" -f $x.Tenant.Name, $x.Host, (Format-State $vs)) $lvl
+                # Red when a service is not running, the keytab is empty or missing, or (with a
+                # Pfx) the certificate is wrong; yellow when nothing is installed or a Java process
+                # lacks the patch flag; green otherwise. A red line makes the exit code 1.
+                $vs = $r.Result.State
+                $v = Get-VerifyVerdict -State $vs -HasPfx ([bool]$x.Tenant.Pfx)
+                Say ("{0,-14} {1}`n{2}" -f $x.Tenant.Name, $x.Host, (Format-State $vs)) $v.Level
+                if ($v.Level -eq 'ERROR') { $redCount++; Write-ErrorEntry ("$($x.Host) ($($x.Tenant.Name)): red in Verify: " + (@($v.Red) -join '; ')) 'verify' -LogOnly }
             } else { $bad++; Write-ErrorEntry "$($x.Host): no result returned" 'verify' }
         } catch { $bad++; Write-ErrorEntry "$($x.Host): $($_.Exception.Message)" 'verify' $_ }
     }
-    Write-AuditEntry -Outcome $(if ($bad) { 'FAILED' } else { 'SUCCESS' }) -Stage 'verify' -Rows $plan.Count
-    exit ([int]($bad -gt 0))
+    Write-AuditEntry -Outcome $(if ($bad -or $redCount) { 'FAILED' } else { 'SUCCESS' }) -Stage 'verify' -Rows $plan.Count -Detail "notRead=$bad red=$redCount"
+    exit ([int](($bad + $redCount) -gt 0))
 }
 
 # ==================================================================== STAGE
@@ -2562,6 +2751,23 @@ if ($Mode -eq 'Stage') {
 }
 
 # ========================================================== SSH / WinRM run
+# SSH sign-in check, before YES and before any password or account is asked: a run that cannot
+# sign in to a connector stops here, with ssh's own reason and a hint, with nothing typed or changed.
+if (Test-SshSignInCheckNeeded $Mode) {
+    Say "Checking the SSH sign-in on $($plan.Count) connector(s)..."
+    $signInBad = [System.Collections.Generic.List[string]]::new(); $signInGood = [System.Collections.Generic.List[string]]::new()
+    foreach ($x in $plan) {
+        $r = Invoke-SshPs -Conn $x -ScriptText "'signin-ok'" -TimeoutSec 120
+        if ($r.ExitCode -eq 0 -and ($r.Lines -contains 'signin-ok')) { if (-not $signInGood.Contains([string]$x.Host)) { $signInGood.Add([string]$x.Host) }; continue }
+        $signInBad.Add([string]$x.Host)
+        Write-ErrorEntry (Get-SshStepError -Conn $x -Result $r -What 'run Windows PowerShell there' -KeyFile $SshKey) 'signin'
+    }
+    if ($signInBad.Count) {
+        $others = @($signInGood | Where-Object { $_ -notin $signInBad })
+        Stop-Run ("The SSH sign-in check failed on $($signInBad.Count) of $($plan.Count) connector(s): $($signInBad -join ', '). Nothing was changed and no password was asked. Fix the sign-in and run again, or leave those connectors out with -Connector" + $(if ($others.Count) { " (for the others: -Connector $($others -join ','))." } else { '.' })) 'signin'
+    }
+    Say "SSH sign-in checked on $($plan.Count) connector(s)." 'OK'
+}
 $interactive = $true
 try { if ([Console]::IsInputRedirected) { $interactive = $false } } catch { }
 if (-not $DryRun -and -not $Yes) {
@@ -2681,7 +2887,14 @@ function Start-ConnectorRun { param($X, [bool]$Async)
         if ($Async) { $h.Task = $p.StandardOutput.ReadToEndAsync() }
         return $h
     }
-    $session = New-PSSession -ComputerName $X.Host -Credential $creds[$t.Name] -Authentication $Authentication
+    # A sign-in the connector refuses is named as such: the health gate then stops the tenant (and
+    # the run), in a dry run too, so a wrong password is not tried on every connector.
+    $cred = $creds[$t.Name]
+    try { $session = New-PSSession -ComputerName $X.Host -Credential $cred -Authentication $Authentication -ErrorAction Stop }
+    catch {
+        if (Test-WinRMSignInRefused $_) { throw (Protect-Text ("Could not sign in to $($X.Host) over WinRM as $($cred.UserName): " + (Get-WinRMSignInReason $_))) }
+        throw
+    }
     try {
         Send-PayloadWinRM -Session $session -T $t -X $X
         $ra = $runAs[$t.Name]; $raUser = $null; $raPw = $null
@@ -2753,7 +2966,14 @@ foreach ($batch in $batches) {
         if ($haltAll -or $haltedTenants.ContainsKey($t.Name)) { $row.Message = 'not attempted - an earlier connector failed'; continue }
         Write-UiSection "$($t.Name) / $($x.Host)"
         try { $running.Add(@{ H = (Start-ConnectorRun -X $x -Async $async); Row = $row }) }
-        catch { $row.Status = 'Error'; $row.Message = Protect-Text $_.Exception.Message; Write-ErrorEntry "$($x.Host): $($_.Exception.Message)" 'upgrade' $_ }
+        catch {
+            $row.Status = 'Error'; $row.Message = Protect-Text $_.Exception.Message; Write-ErrorEntry "$($x.Host): $($_.Exception.Message)" 'upgrade' $_
+            # A sign-in the connector refused is known before the next connector is started, so it
+            # stops them here, also when they were to start together (-Parallel, which ignores
+            # -ContinueOtherTenants): the same account would be tried on each. The health gate
+            # below says so, once.
+            if ([string]$row.Message -like 'Could not sign in to * over WinRM as *') { $haltedTenants[$t.Name] = $true; if ($Parallel -or -not $ContinueOtherTenants) { $haltAll = $true } }
+        }
     }
     if ($async -and $running.Count) { Say "$($running.Count) connectors are upgrading at the same time. Their output is shown as each one is collected." }
     foreach ($e in $running) {
@@ -2776,8 +2996,10 @@ foreach ($batch in $batches) {
     }
     foreach ($row in $rows) {
         $results.Add($row)
-        # HEALTH GATE (a dry run never gates)
-        $badSignIn = ([string]$row.Message -like 'Could not start the task as*')
+        # HEALTH GATE (a dry run gates only on a failed check and on a refused sign-in)
+        $badTask = ([string]$row.Message -like 'Could not start the task as*')
+        $badWinRM = ([string]$row.Message -like 'Could not sign in to * over WinRM as *')
+        $badSignIn = $badTask -or $badWinRM
         if ($DryRun -and $Mode -eq 'RepairCertificate') { }
         elseif ($DryRun -and -not $badSignIn -and $row.Status -eq 'DryRunFailed' -and -not $haltedTenants.ContainsKey($row.Tenant)) {
             $haltedTenants[$row.Tenant] = $true
@@ -2786,7 +3008,8 @@ foreach ($batch in $batches) {
         elseif ($badSignIn -or (-not $DryRun -and $row.Status -notin 'Success','Skipped')) {
             $haltedTenants[$row.Tenant] = $true
             if (-not $ContinueOtherTenants) { $haltAll = $true }
-            if ($badSignIn) { Say "Stopping: the task could not be started on $($row.Connector) with the account given, so it is not tried on the other connectors." 'WARN' }
+            if ($badWinRM) { Say "Stopping: $($row.Connector) refused the WinRM sign-in with the account given, so it is not tried on the other $(if ($haltAll) { '' } else { "$($row.Tenant) " })connectors." 'WARN' }
+            elseif ($badTask) { Say "Stopping: the task could not be started on $($row.Connector) with the account given, so it is not tried on the other connectors." 'WARN' }
             else { Say "Stopping: $($row.Connector) did not finish healthy. Connectors not yet started are left untouched." 'WARN' }
         }
     }

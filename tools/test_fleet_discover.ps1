@@ -1,6 +1,7 @@
 # Offline tests for -Mode Discover: the read-only remote script (static safety checks, and a run
 # here under pwsh), ConvertTo-DiscoveredRows, Invoke-ConnectorDiscovery (against a stand-in ssh put
-# first on the PATH) and Export-DiscoveredCsv. No connector, domain controller or share is contacted.
+# first on the PATH) and Export-DiscoveredCsv; and, through the same stand-in, Invoke-SshPs, the
+# transport of the other SSH modes' short scripts. No connector, domain controller or share is contacted.
 #   pwsh -NoLogo -NoProfile -File tools/test_fleet_discover.ps1
 # Functions and the $script: constants are loaded from the orchestrator through its AST; env
 # FLEET_FUNC_FILES (semicolon-separated) names other files to load from (for each name the first
@@ -12,7 +13,7 @@ $here = $PSScriptRoot
 $repo = Split-Path -Parent $PSScriptRoot
 $files = @(if ($env:FLEET_FUNC_FILES) { $env:FLEET_FUNC_FILES -split ';' | Where-Object { $_.Trim() } | ForEach-Object { $_.Trim() } }
            else { (Join-Path $repo 'FleetDeploy/Invoke-AccessConnectorUpgrade.ps1') })
-$fnNames = @('Invoke-ConnectorDiscovery','ConvertTo-DiscoveredRows','Export-DiscoveredCsv','Get-SshBaseArgs','Get-SshTarget')
+$fnNames = @('Invoke-ConnectorDiscovery','ConvertTo-DiscoveredRows','Export-DiscoveredCsv','Get-SshBaseArgs','Get-SshTarget','Invoke-SshPs','ConvertFrom-RemoteErrorText')
 $varNames = @('script:FleetColumns','script:DiscoverRemoteScript')
 
 $script:Failed = 0
@@ -562,6 +563,48 @@ Test-Case 'transport: ssh missing from the PATH gives an Error, not a throw' {
     } finally { $env:PATH = $keep }
     Want ($r.Ok -eq $false) 'Ok is true'
     Want ($r.Error -match '^ssh could not be run: ') "Error: $($r.Error)"
+}
+Test-Case 'Invoke-SshPs: the script goes in -EncodedCommand, nothing on standard input; stdout as captured before, stderr kept apart' {
+    $env:FAKE_SSH_MODE = 'canned'
+    $r = Invoke-SshPs -Conn ([pscustomobject]@{ Host = 'connector1.example.invalid'; SshUser = 'ops' }) -ScriptText "'ok'"
+    Want-Eq $r.ExitCode 0 'ExitCode'
+    Want-Eq (@($r.Lines).Count) 2 'number of Lines (CLIXML lines dropped, no empty last line)'
+    Want-Eq @($r.Lines)[0] 'a line of other output' 'first line'
+    Want (@($r.Lines)[1] -like '*DISCOVER_JSON:*') 'second line'
+    Want-Eq (@($r.Errors) -join ' | ') 'x' 'Errors (the CLIXML error record decoded)'
+    Want ($r.TimedOut -eq $false) 'TimedOut'
+    $a = Get-FakeArgs
+    Want-Eq $a[-2] 'ops@connector1.example.invalid' 'target'
+    Want ($a[-1] -match '^powershell -NoProfile -EncodedCommand (\S+)$') "remote command: $($a[-1])"
+    Want-Eq ([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($Matches[1]))) "`$ProgressPreference='SilentlyContinue';'ok'" 'script sent'
+    Want-Eq ([IO.File]::ReadAllText((Join-Path $fakeDir 'stdin.txt'))) '' 'standard input'
+}
+Test-Case 'Invoke-SshPs: ssh cannot connect: exit code 255, ssh''s own reason in Errors' {
+    $env:FAKE_SSH_MODE = 'fail'
+    $r = Invoke-SshPs -Conn ([pscustomobject]@{ Host = 'connector9.example.invalid'; SshUser = 'administrator' }) -ScriptText "'ok'"
+    Want-Eq $r.ExitCode 255 'ExitCode'
+    Want-Eq (@($r.Lines).Count) 0 'Lines'
+    Want-Eq (@($r.Errors) -join ' | ') 'remote error record | ssh: connect to host connector9.example.invalid port 22: Connection refused' 'Errors'
+    $env:FAKE_SSH_MODE = 'nojson'
+    $r = Invoke-SshPs -Conn ([pscustomobject]@{ Host = 'connector1.example.invalid'; SshUser = 'administrator' }) -ScriptText "'ok'"
+    Want-Eq (@($r.Lines) -join '|') 'hello' 'one line, no empty line after it'
+    Want-Eq (@($r.Errors).Count) 0 'Errors when nothing came on standard error'
+}
+Test-Case 'Invoke-SshPs: stopped after -TimeoutSec; ssh missing gives Errors, not a throw' {
+    $env:FAKE_SSH_MODE = 'hang'
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $r = Invoke-SshPs -Conn ([pscustomobject]@{ Host = 'connector1.example.invalid'; SshUser = 'administrator' }) -ScriptText "'ok'" -TimeoutSec 2
+    $sw.Stop()
+    Want ($r.TimedOut -eq $true -and $null -eq $r.ExitCode) "TimedOut $($r.TimedOut), ExitCode '$($r.ExitCode)'"
+    Want-Eq @($r.Errors)[0] 'no answer within 2 seconds' 'Errors'
+    Want ($sw.Elapsed.TotalSeconds -lt 15) "took $([int]$sw.Elapsed.TotalSeconds) seconds"
+    $fakePid = [int](Get-Content -LiteralPath (Join-Path $fakeDir 'pid.txt') -First 1)
+    $alive = $null; try { $alive = [Diagnostics.Process]::GetProcessById($fakePid); if ($alive.HasExited) { $alive = $null } } catch { $alive = $null }
+    Want ($null -eq $alive) "the fake ssh (process $fakePid) is still running"
+    $keep = $env:PATH
+    try { $env:PATH = Join-Path $runDir 'empty-bin'; $r = Invoke-SshPs -Conn ([pscustomobject]@{ Host = 'connector1.example.invalid'; SshUser = 'administrator' }) -ScriptText "'ok'" }
+    finally { $env:PATH = $keep }
+    Want ($null -eq $r.ExitCode -and @($r.Errors)[0] -match '^ssh could not be run: ') "ssh missing: ExitCode '$($r.ExitCode)', Errors $(@($r.Errors) -join ' | ')"
 }
 $env:PATH = $savedPath
 foreach ($v in 'FAKE_SSH_MODE','FAKE_SSH_DIR','FAKE_SSH_JSON') { Remove-Item -LiteralPath "Env:$v" -ErrorAction SilentlyContinue }

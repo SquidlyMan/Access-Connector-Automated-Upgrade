@@ -97,10 +97,34 @@ Where domains do not trust each other, a file share in one is usually not readab
 
 ## 4. Prepare the connectors
 
-- SSH route: stand up OpenSSH Server with key sign-in on each connector (Getting Started, section 4). For many servers, push the same four steps with Group Policy, your configuration tool, or a one-off remoting loop.
+- SSH route: stand up OpenSSH Server with key sign-in on each connector (Getting Started, section 4). `Prerequisites\Install-OpenSSHServer.ps1` does the server's part in one step: on the server, or on several servers through `Invoke-Command` from a Windows admin machine (Getting Started, section 4, "The quick way"). For every connector in one OU, use `Deploy-OpenSSH-GPO.ps1` (below), or push the same script with your configuration tool.
 - WinRM route: confirm `Test-WSMan <connector>` answers.
 - Check each connector has at least 3 GB free on `C:`. The tool warns below that.
 - If a PowerShell module-logging policy applies to the connectors, arrange an exception for the run. The tool refuses to start under it.
+- If the connectors run an endpoint-protection product with a firewall of its own, open port 22 there as well, for `C:\Windows\System32\OpenSSH\sshd.exe`: it can drop SSH while Windows Firewall lets it in and ping still answers.
+
+### Many connectors: Deploy-OpenSSH-GPO.ps1
+
+`Prerequisites\Deploy-OpenSSH-GPO.ps1` makes one Group Policy object (GPO) that runs `Install-OpenSSHServer.ps1` as a computer startup script, with your public keys and the networks allowed to reach port 22, and links it to one organizational unit (OU). Every computer in that OU, and in the OUs under it, runs it at its next restart.
+
+1. Put the connectors' computer accounts in an OU of their own. The script refuses the domain root unless you add `-AllowDomainRoot` and `-AllowDomainControllers`, an OU with a domain controller in it or under it unless you add `-AllowDomainControllers`, and a container such as `CN=Computers`, which Group Policy cannot be linked to.
+2. Run it in Windows PowerShell 5.1 on a domain-joined Windows machine that has the Group Policy Management tools and the Active Directory module (on Windows Server: `Install-WindowsFeature GPMC, RSAT-AD-PowerShell`), with an account that may create GPOs, link them on the OU and write to SYSVOL. Show the plan first; `-WhatIf` changes nothing:
+
+```
+$ou = 'OU=Access Connectors,DC=example,DC=local'
+.\Deploy-OpenSSH-GPO.ps1 -TargetOU $ou -PublicKeyFile .\connector_ed25519.pub `
+    -AllowFrom 10.0.0.0/24 -WhatIf
+```
+
+3. Run the same command without `-WhatIf`. It shows the plan again and goes on only when you type `YES` (`-Yes` instead, for a run with nobody at the keyboard). It refuses to run without `-AllowFrom`, unless you add `-AllowFromAnyAddress`: a computer where the GPO installs OpenSSH Server then accepts port 22 from any address, through the install's own firewall rule. Rules limited before stay as they are. It writes the payload, a small startup wrapper and a settings file with the keys and networks into the GPO's own folder in SYSVOL, registers the startup script, checks all of it and links the GPO last. If a step fails, a GPO made in that run is deleted again, so nothing is left linked but empty.
+4. Restart the connectors when it suits you: a startup script runs only while a computer starts, and `gpupdate` alone does not run it. One restart is enough on Windows Server. Then, elevated on each connector, `gpresult /r /scope computer` must list the GPO under Applied Group Policy Objects. The payload's own logs are in `C:\ProgramData\ssh\logs` there; its audit log holds the host key fingerprint as `hostKey=` (Getting Started, section 4.6).
+5. To change the keys or a setting later, run it again with every setting: a rerun replaces the GPO's settings, and its plan lists what changes. For another OU, give it a GPO of its own with `-GpoName`: the script refuses a GPO that is linked to another OU as well, unless you add `-AllowOtherLinks`.
+
+Keys are only added. A key taken out of the GPO stays trusted on the computers that already ran it, until its line is deleted from `C:\ProgramData\ssh\administrators_authorized_keys` there; `Deploy-OpenSSH-GPO.ps1 -Help` (UNDOING IT) has a command for it. Removing the GPO, or its link, does not remove OpenSSH Server or the keys from a computer that already ran it.
+
+Run `Install-OpenSSHServer.ps1` by hand on one connector first, with the same settings: what only a computer can tell, such as a `-Source` folder that is not there, fails on that computer at every startup. Computers that take their updates from WSUS need Windows Update allowed for Features on Demand by policy, or a Features on Demand share the computer accounts can read, given as `-PayloadParameters @{ Source = '\\fileserver.example.local\FoD' }`.
+
+The script is new and has not yet run against a domain: it has been tested offline only, with fake Group Policy and Active Directory modules (Validation Record).
 
 ## 5. Take a safety net
 
@@ -125,13 +149,13 @@ Allow about ten minutes per connector. In testing each connector took between ni
 | Switch | Effect |
 |---|---|
 | `-ParallelTenants` | Fleet entries run side by side, one connector at a time in each. Each multi-connector entry still keeps one online. If an Access tenant is split over two entries (connector groups with different services), one connector from each can be down together. |
-| `-Parallel` | Everything at once. Every tenant is offline until its connectors finish and a failure cannot stop the others. For labs and for single-connector tenants. |
+| `-Parallel` | Everything at once. Every tenant is offline until its connectors finish and a failure cannot stop the others, except a WinRM sign-in that a connector refuses: the connectors not yet started are then left alone. For labs and for single-connector tenants. |
 
 Neither has been through a real run yet (see the Validation Record).
 
 ### Unattended
 
-Add `-Yes` to skip the confirmation. Passwords are still asked at prompts unless you pass credentials as objects (`-Credential`, `-RunAsCredential`); the configuration, PFX and service account passwords are always prompted in SSH and WinRM modes. A run started with no terminal (with its input redirected, or with `pwsh -NonInteractive`; start scheduled runs with `pwsh -NonInteractive`, because a scheduler that gives the run a console is not detected otherwise) cannot answer them: it stops at the first prompt with exit code 1, an error-log and an audit entry, before any connector is contacted. (In 1.4.1 a run with its input redirected ended silently with exit code 0.) For a change window with nobody present, use Stage mode:
+Add `-Yes` to skip the confirmation. Passwords are still asked at prompts unless you pass credentials as objects (`-Credential`, `-RunAsCredential`); the configuration, PFX and service account passwords are always prompted in SSH and WinRM modes. A run started with no terminal (with its input redirected, or with `pwsh -NonInteractive`; start scheduled runs with `pwsh -NonInteractive`, because a scheduler that gives the run a console is not detected otherwise) cannot answer them: it stops at the first prompt with exit code 1, an error-log and an audit entry, before anything is copied to a connector. (An SSH run checks the SSH sign-in on every selected connector before its first prompt, and stops there, naming SSH's reason, if one fails. In 1.4.1 a run with its input redirected ended silently with exit code 0.) For a change window with nobody present, use Stage mode:
 
 1. `-Mode Stage -Tenant <name>` copies everything and writes `Run-Upgrade.cmd`.
 2. On each connector, signed in as a domain admin:
@@ -140,7 +164,7 @@ Add `-Yes` to skip the confirmation. Passwords are still asked at prompts unless
 powershell -ExecutionPolicy Bypass -File C:\ProgramData\AccessConnectorUpdate\Invoke-ConnectorUpgradeLocal.ps1 -Prompt -Schedule "2027-01-15 22:30"
 ```
 
-The passwords are typed now and stored encrypted for that account; the task runs at the time given. Stagger the times so two connectors of one tenant do not run together. Check each with `-Mode Verify` afterwards.
+The passwords are typed now and stored encrypted for that account; the task runs at the time given. Stagger the times so two connectors of one tenant do not run together. Check each with `-Mode Verify` afterwards. The task deletes itself, and with it the account's Windows password that Task Scheduler keeps, when the run ends, or 12 hours after the time given if it has not run by then (1.5.1; not yet run on a connector). A time that has already passed on the connector's clock is refused, and so is a new time while an earlier scheduled run there is still running; nothing is written then.
 
 ## 7. Clean installs and service changes
 
@@ -160,7 +184,7 @@ The passwords are typed now and stored encrypted for that account; the task runs
 | Empty keytab | `-Mode RepairKeytab` |
 | Audit trail | Run with `-AuditLog <folder>` every time; one line is appended per run |
 
-Verify marks a certificate that has expired, so a scheduled `-Mode Verify` doubles as a certificate check. Its exit code is 1 only when a connector could not be read, so look at the output, not just the code.
+Verify marks a certificate that has expired, so a scheduled `-Mode Verify` doubles as a certificate check. Since 1.5.1 its exit code is 1 when any connector could not be read or has a red line (a service down, the keytab empty or missing, a wrong certificate for a group with a `Pfx`), and the error log names what is red; a yellow line (nothing installed, a Java process without the patch flag) keeps exit code 0, so look at the output as well.
 
 ## 9. Rolling back
 

@@ -170,7 +170,7 @@ The values are kept as they were given at install time, typing mistakes included
 - **Line breaks in a cell.** Alt+Enter puts a line break inside a cell, which a CSV file carries inside a quoted field. The import accepts it in `Services` (one service per line) and refuses it elsewhere.
 - **Merged cells.** In a merged range only the top-left cell holds the value. The import gives the value of a cell merged down one column to each row of the merge.
 
-What has been read so far: workbooks made by LibreOffice and by the template builder, and CSV files written by the tool and by hand. A workbook saved by Microsoft Excel itself has not yet been imported (Validation Record).
+What has been read so far: workbooks made by LibreOffice and by the template builder, a workbook saved by Microsoft Excel for Mac (16.115.1), and CSV files written by the tool and by hand. In that Excel the template opened with no repair prompt, and its `Fleet` sheet kept the Text format: `26.10` typed into an empty `ExpectVersionPrefix` cell stayed `26.10`. The copy Excel saved as a new workbook imported with exactly the same plan as the template. A CSV file saved by Excel, and Excel for Windows, are not yet recorded (Validation Record).
 
 ## Running things on a connector remotely
 
@@ -180,6 +180,19 @@ What has been read so far: workbooks made by LibreOffice and by the template bui
 - **`pwsh -File` passes `"A,B"` as one string.** The main script splits comma lists itself.
 - **Connector-side scripts are ASCII-only.** Windows PowerShell 5.1 reads a file without a byte-order mark in the system code page, so a single non-ASCII character can break parsing.
 - **Remote output arrives with CLIXML progress records mixed in.** Lines beginning `#< CLIXML` or `<Objs ` are dropped.
+- **ssh's exit code tells a failed sign-in from a failed script.** ssh exits with 255 when it could not connect or sign in (its manual page says so), and otherwise with the exit code of the remote command. Its own reason comes on standard error, apart from the script's output; with `-o LogLevel=ERROR` it still prints `Permission denied (publickey).`, `Host key verification failed.`, `Could not resolve hostname ...`, `Connection refused` and the like. Until 1.5.1 the first SSH step threw that text away, so a key that was not offered and a server that was down gave the same message. Since 1.5.1 it is read, shown and turned into a hint.
+- **Errors of a script sent with `-EncodedCommand` come back as CLIXML on standard error**: a `#< CLIXML` line, then an `<Objs ...>` line with one `<S S="Error">` element per line of the error message and its position lines. Seen here from PowerShell 7 (line ends written `_x000A_`, colour codes `_x001B_`). Windows PowerShell 5.1 is expected to write the same records with `_x000D__x000A_` line ends, but that has not yet been seen from a connector. Since 1.5.1 the tool decodes them for its messages and leaves out the position lines (`At line:1 char:...`, `+ ...`).
+- **A cmdlet error does not stop such a script.** `New-Item` failing (access denied, say) is a non-terminating error: the script goes on and its last line still runs. The folder step used to end with `'ok'` regardless, so a folder that could not be made passed unnoticed until the copy into it failed. Since 1.5.1 it answers `ok` only when its folders are there.
+
+## Setting up OpenSSH Server and PowerShell 7 on Windows
+
+Learned in the lab while SSH and PowerShell 7 were set up on the test servers with the earlier scripts that `Prerequisites` is rewritten from:
+
+- **An SSH session whose default shell is pwsh cannot upgrade PowerShell 7.** The upgrade stops `pwsh.exe`, which ends the session and can stop the install half-way. The tool is not affected, because it starts Windows PowerShell by name. `Install-PowerShell7.ps1` refuses to install over SSH, and `Install-OpenSSHServer.ps1` leaves the default shell alone unless it is asked to change it.
+- **`Add-WindowsCapability` for OpenSSH Server can take over an hour on Windows 10 and 11.** On servers it is quick. A restart while it runs stops the install.
+- **An endpoint-protection firewall can drop TCP 22 without a trace.** Ping still answers and Windows Firewall lets the port in, but ssh times out. The fix is an inbound rule in that product for `C:\Windows\System32\OpenSSH\sshd.exe`.
+- **Host keys made by hand can stop sshd.** `ssh-keygen -A` in a window that is not elevated fails without a message. In an elevated window it works, but the key files can then carry an explicit entry for the admin account that `icacls /inheritance:r` does not remove. sshd refuses such keys and stops; only `sshd -T` or `sshd.exe -ddd` says why (`no hostkeys available`), and the event logs stay empty. The fix: owner SYSTEM, that entry removed, then `/inheritance:r` with full control for SYSTEM and Administrators only, and a restart of sshd (Troubleshooting has the commands). `Install-OpenSSHServer.ps1` makes this repair itself.
+- **A Group Policy startup script runs only while a computer starts.** After a deployment by Group Policy nothing happens until each computer restarts, and `gpresult /r /scope computer` on it shows whether the GPO applied. The earlier deployer also met a GPO whose computer version was 0: computers show it as Not Applied (Empty) and skip it without a warning. `Deploy-OpenSSH-GPO.ps1` links its GPO only after it has checked that version.
 
 ## PowerShell pitfalls met while writing the tool
 

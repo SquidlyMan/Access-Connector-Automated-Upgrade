@@ -42,7 +42,14 @@ You never type a password into a file. The tool asks for each one, with the typi
 
 ### The steps
 
-1. **Install PowerShell 7 on the admin machine.** On a Mac with Homebrew, use the first command; on Windows, the second:
+1. **Install PowerShell 7 on the admin machine.** The tool's `Prerequisites` folder has a script for it: put the tool in its folder first (step 2), then run the script from there. On Windows, double-click `Prerequisites\Install-PowerShell7.cmd`: it asks for administrator rights, installs or updates PowerShell 7, and waits for a key so that you can read the result. On a Mac, run the second command in Terminal; it asks for your password for the install step only:
+
+```
+Prerequisites\Install-PowerShell7.cmd
+bash Prerequisites/install-powershell7-macos.sh
+```
+
+Each one installs Microsoft's own package after checking it against the SHA-256 published with the release and checking that Microsoft signed it, and changes nothing when PowerShell 7 is already current. Run the Windows one at the console or by Remote Desktop: it refuses to run over SSH (section 13). Both scripts are new and have been tested offline only. Instead of them you can use Homebrew on a Mac (the first command) or winget on Windows (the second):
 
 ```
 brew install --cask powershell
@@ -51,15 +58,15 @@ winget install --id Microsoft.PowerShell --source winget
 
 On Linux, follow Microsoft's instructions for your distribution. **It worked when** `pwsh --version` shows 7 or later. The connector servers need nothing extra: they already have the Windows PowerShell 5.1 that the tool uses there. (Section 2)
 
-2. **Put the tool in a folder.** Download or clone this repository to a folder on the admin machine or on a file share it can reach. This folder is the **staging folder**. **It worked when** the folder holds `FleetDeploy`, `Silent Install`, `Installers`, `Configs`, `ChildCerts` and `TrustedCerts`. (Section 6)
+2. **Put the tool in a folder.** Unzip the tool's ZIP file, or clone its repository, into a folder on the admin machine or on a file share it can reach. This folder is the **staging folder**. On Windows, unblock a downloaded ZIP before you unzip it (section 6), or PowerShell refuses to run the scripts. **It worked when** the folder holds `FleetDeploy`, `Silent Install`, `Prerequisites`, `Installers`, `Configs`, `ChildCerts` and `TrustedCerts`. (Section 6)
 
 3. **Add your files to it.** The installer goes in `Installers`, each tenant's `es-config.json` in `Configs`, the Kerberos `.pfx` in `ChildCerts`, and any CA certificates the connectors must trust in `TrustedCerts`. If your connector version needs Omnissa's Java4Shell patch, unzip it into `Installers\Java4shellPatch` (section 6, step 5). **It worked when** every file is in its folder. (Section 6)
 
 4. **Open a way in to each connector.** Choose one route (section 3 compares them):
-- **SSH** (recommended): every part of the tool works over it, from any admin machine. Turn on OpenSSH Server on each connector and let in one SSH key from the admin machine (section 4). **It worked when** `ssh administrator@connector1.example.local hostname` prints the server's name without asking for a password (section 4.6).
+- **SSH** (recommended): every part of the tool works over it, from any admin machine. Make one SSH key on the admin machine (section 4.3), then turn on OpenSSH Server on each connector and let that key in. `Prerequisites\Install-OpenSSHServer.ps1` does the connector's part in one step: run it elevated on each connector with your public key, or on several connectors at once from a Windows admin machine (section 4, "The quick way"). For every connector in one organizational unit (OU), `Deploy-OpenSSH-GPO.ps1` does it through Group Policy (Implementation Guide, section 4). **It worked when** `ssh administrator@connector1.example.local hostname` prints the server's name without asking for a password (section 4.6).
 - **WinRM**: from a Windows admin machine only, when SSH is not allowed. Upgrades and clean installs work; the report, discovery and repair modes do not (section 5). **It worked when** `Test-WSMan connector1.example.local` answers.
 
-5. **Tell the tool about your connectors: the fleet file.** Open a terminal, go to the `FleetDeploy` folder and type `pwsh` (on Windows, `pwsh -ExecutionPolicy Bypass` if your policy blocks scripts run from a share). Type this step's commands, and those of the later steps, at its prompt. Then, depending on your starting point:
+5. **Tell the tool about your connectors: the fleet file.** Open a terminal, go to the `FleetDeploy` folder and type `pwsh` (on Windows, `pwsh -ExecutionPolicy Bypass` if your policy blocks scripts run from a share; for a downloaded ZIP, see section 6). Type this step's commands, and those of the later steps, at its prompt. Then, depending on your starting point:
 - **Connectors already installed, SSH open:** let the tool read them into a spreadsheet. It changes nothing on them. Then open the spreadsheet it writes and fill in anything its `Notes` column says is missing (section 7.2):
 
 ```
@@ -89,7 +96,7 @@ Then make the fleet file's `JavaPatchDir` line match step 3: on (no `#` in front
 
 **It worked when** every connector you listed has a line. Verify installs nothing and changes no connector setting. It does write a little on each connector: it creates `C:\ProgramData\AccessConnectorUpdate` if it is missing, locks it to Administrators and SYSTEM, copies the tool's helper script into it, and adds a line to the tool's log there. (Section 8.1)
 
-7. **Rehearse on one tenant.** A dry run copies the files and runs every check it can, but installs nothing. Over WinRM, add `-Mode WinRM` to this command and the next one.
+7. **Rehearse on one tenant.** A dry run copies the files and runs every check it can, but installs nothing. Over SSH it first checks that it can sign in to each connector, before it asks for any password. Over WinRM, add `-Mode WinRM` to this command and the next one.
 
 ```
 ./Invoke-AccessConnectorUpgrade.ps1 -Tenant TENANT1 -DryRun
@@ -103,7 +110,7 @@ Then make the fleet file's `JavaPatchDir` line match step 3: on (no `#` in front
 ./Invoke-AccessConnectorUpgrade.ps1 -Tenant TENANT1
 ```
 
-The tool shows its plan, asks you to type `YES`, then asks for the passwords. It does the connectors one at a time, about ten minutes each, so a tenant with two or more connectors stays online. If a connector is not healthy afterwards, the tool stops before the next one. **It worked when** the summary shows `Success` for every connector. (Sections 8.3 and 12)
+The tool shows its plan, checks the sign-in to each connector (over SSH, as in step 7), asks you to type `YES`, then asks for the passwords. It does the connectors one at a time, about ten minutes each, so a tenant with two or more connectors stays online. If a connector is not healthy afterwards, the tool stops before the next one. **It worked when** the summary shows `Success` for every connector. (Sections 8.3 and 12)
 
 9. **Check, then do the rest.** Run step 6 again to see the new versions. The summary and the logs are in `FleetDeploy/FleetLogs`. Then repeat steps 7 and 8 for each other tenant, or leave out `-Tenant` to do every tenant in the fleet file, top to bottom. (Section 12)
 
@@ -153,8 +160,8 @@ Connectors inside a tenant are done one at a time. A tenant with two or more con
 
 | Item | Detail |
 |---|---|
-| Admin machine | macOS, Linux or Windows with PowerShell 7 or later (`pwsh`). The tool will not start under Windows PowerShell 5.1. WinRM mode needs a Windows admin machine. The connector servers themselves need only the Windows PowerShell 5.1 that Windows Server includes, over WinRM or SSH. If you use a connector server as the admin machine, install PowerShell 7 on it as well. |
-| Reach to the connectors | SSH with key sign-in (port 22), or PowerShell remoting (WinRM, port 5985; the tool does not use WinRM over HTTPS). With WinRM, SSH is not needed for upgrades and clean installs. `-Mode Verify`, `-Mode Discover`, `-Mode Stage` and the two repair modes always use SSH. |
+| Admin machine | macOS, Linux or Windows with PowerShell 7 or later (`pwsh`). The tool will not start under Windows PowerShell 5.1. WinRM mode needs a Windows admin machine. The connector servers themselves need only the Windows PowerShell 5.1 that Windows Server includes, over WinRM or SSH. If you use a connector server as the admin machine, install PowerShell 7 on it as well. The `Prerequisites` folder has scripts that install or update PowerShell 7 on Windows and on macOS (quick start, step 1). |
+| Reach to the connectors | SSH with key sign-in (port 22), or PowerShell remoting (WinRM, port 5985; the tool does not use WinRM over HTTPS). With WinRM, SSH is not needed for upgrades and clean installs. `-Mode Verify`, `-Mode Discover`, `-Mode Stage` and the two repair modes always use SSH. `Prerequisites\Install-OpenSSHServer.ps1` sets up SSH on a connector in one step (section 4). |
 | Connector installer | The Omnissa Access Connector installer `.exe` for the version you want |
 | Tenant configuration file | The `es-config.json` from the Access console, and its password |
 | Service account | Needed when a connector runs Kerberos Auth or Virtual App: the account name and its password |
@@ -173,11 +180,13 @@ The connectors themselves need only what the Omnissa installer needs, plus Windo
 | Upgrade and clean install | Yes | Yes | Yes, by hand or scheduled on the connector |
 | Verify, Discover, RepairKeytab, RepairCertificate | Yes | No, these use SSH | No |
 | Logs copied back to one folder | Yes | No, they stay on the connector | No |
-| Set-up work | Enable OpenSSH Server on each connector | Usually none on domain-joined servers | Same as SSH |
+| Set-up work | Enable OpenSSH Server on each connector (one script, section 4) | Usually none on domain-joined servers | Same as SSH |
 
 **Recommendation:** use SSH if you can. Every mode works over it, and it is the route with the most testing. Use WinRM when policy does not allow SSH on the servers; you can still upgrade and clean install, but you lose the report, discovery and repair modes. You can mix the two: WinRM for upgrades and SSH on a few servers for the repair modes.
 
 ## 4. Stand up SSH on a Windows server
+
+Do this once on each connector: with one script (the quick way, below) or by hand (4.1 to 4.7). Either way, the key is made on the admin machine (4.3) and the sign-in is tested from there (4.6).
 
 ### Why SSH, and why a key
 
@@ -206,9 +215,50 @@ When the tool connects, the connector checks that the admin machine holds the pr
 - **One key for every connector.** Generate it once (4.3) and authorise the same public key on each connector (4.4).
 - **An SSH agent holds the unlocked key.** You type the passphrase once per session (macOS can keep it in the Keychain), and every connection after that, including the dozens a run makes, signs in without a prompt.
 - **An SSH configuration entry names the key** (4.7), so you do not have to add `-SshKey` to every command.
-- **Many servers at once.** The four steps below are the same on every connector, so they can be pushed with Group Policy, your configuration tool or a one-off remoting loop instead of being typed on each server.
+- **Many servers at once.** The server steps are the same on every connector. `Install-OpenSSHServer.ps1` does them on several connectors in one command from a Windows admin machine (the quick way, below). For every connector in one OU, `Prerequisites\Deploy-OpenSSH-GPO.ps1` makes a Group Policy object that runs that script on each one at its next restart (Implementation Guide, section 4). Your configuration tool can push it too.
 
-### The steps
+### The quick way: one script per connector
+
+`Prerequisites\Install-OpenSSHServer.ps1` does 4.1, 4.2, 4.4 and 4.5 on the connector in one step. Make the key on the admin machine first (4.3). Copy the script to the connector, then run it there in an elevated Windows PowerShell window, with your public key between the quotes and the network your admin machines connect from. If Windows refuses to run it, unblock it first (section 6).
+
+```
+.\Install-OpenSSHServer.ps1 'ssh-ed25519 AAAA...your public key...' `
+    -AllowFrom 10.0.0.0/24
+```
+
+Add `-WhatIf` to see what it would change, with nothing changed. Run it on one connector first and test the sign-in from the admin machine (4.6) before you do the others.
+
+From a Windows admin machine it can do several connectors in one command, with no Remote Desktop: PowerShell remoting takes the script, the key and the networks to each connector, and each one sends back a result line. Run it with an account that is an administrator on the connectors:
+
+```
+$key = Get-Content $HOME\.ssh\connector_ed25519.pub
+$servers = 'connector1.example.local', 'connector2.example.local'
+Invoke-Command -ComputerName $servers -ArgumentList $key, '10.0.0.0/24' `
+    -FilePath .\Install-OpenSSHServer.ps1 |
+    Format-Table PSComputerName, Result, PasswordSignIn, HostKey
+```
+
+What it does. It changes only what is not already right, so it is safe to run again:
+
+- Installs OpenSSH Server if it is missing, from Windows Update or WSUS, or with `-Source` from Features on Demand media (14.6). Sets sshd to start with Windows and starts it (4.1).
+- Adds each public key to `C:\ProgramData\ssh\administrators_authorized_keys`, keeping the keys already there, and limits that file to Administrators and SYSTEM (4.4).
+- With `-AllowFrom`, limits the OpenSSH firewall rules to those networks, and names any other rule that still lets port 22 in from any address (4.2). Without `-AllowFrom` it adds, enables or changes no firewall rule.
+- Turns password sign-in off only when a key that sshd can read is in the file, the file is limited as above, and nothing in `sshd_config` stops administrators from signing in with that key (4.5). Otherwise it leaves password sign-in as it is and says why. It never turns password sign-in back on.
+- Checks the new `sshd_config` with `sshd -t` before using it, keeps the old one as `sshd_config.bak-<date>`, and puts it back if sshd does not come back after the restart.
+- Puts right host key files whose permissions stop sshd from starting (section 13).
+- Ends with the connector's host key fingerprint, to compare at your first connection (4.6).
+
+What it does not do:
+
+- Anything on the admin machine: making the key (4.3), testing the sign-in (4.6) and the SSH settings file (4.7) are yours to do.
+- Remove a key. It only adds keys; to take one out, delete its line from the key file (14.31).
+- Change the OpenSSH default shell, unless you ask with `-DefaultShell`. The tool does not need it changed.
+- Open port 22 in another firewall, such as an endpoint-protection product's own (section 13).
+- Run inside an SSH session that comes from an address outside `-AllowFrom`: it refuses, because the next sign-in from there would be refused.
+
+It needs Windows Server 2019 or later (or Windows 10 1809 or later) and an elevated 64-bit Windows PowerShell 5.1. On older Windows, install Win32-OpenSSH first; the script then configures it. `-Help` lists every option, including `-KeepPasswordSignIn`, `-Banner` and `-LoginAlert`. The script is new: it has been tested offline only, not yet on a Windows server (Validation Record).
+
+### The steps, by hand
 
 Do this once on each connector. It takes about five minutes. Run the commands in an elevated Windows PowerShell window on the connector, except 4.3, 4.6 and 4.7, which run on the admin machine.
 
@@ -220,7 +270,7 @@ Set-Service -Name sshd -StartupType Automatic
 Start-Service sshd
 ```
 
-On Windows Server 2025 the component is already present and the first line simply reports that. On Windows Server 2019 and 2022 it is downloaded from Windows Update; a server with no internet access needs the Features on Demand media or your WSUS to supply it.
+On Windows Server 2025 the component is already present and the first line simply reports that. On Windows Server 2019 and 2022 it is downloaded from Windows Update; a server with no internet access needs the Features on Demand media or your WSUS to supply it. On a server the first line is usually quick; on Windows 10 and 11 it can take more than an hour. Do not restart the computer while it runs: a restart stops the install.
 
 ### 4.2 Check the firewall rule
 
@@ -250,6 +300,8 @@ New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP-Mgmt' `
 
 Replace `10.0.0.0/24` with your own management network.
 
+Windows Firewall may not be the only firewall on the server. An endpoint-protection product with a firewall of its own can drop port 22 while these rules let it in, and while ping still answers. If ssh then times out, add an inbound rule in that product for `C:\Windows\System32\OpenSSH\sshd.exe` (section 13).
+
 ### 4.3 Create a key on the admin machine
 
 On the admin machine (not the connector):
@@ -272,7 +324,7 @@ Set-Service ssh-agent -StartupType Automatic; Start-Service ssh-agent
 ssh-add $HOME\.ssh\connector_ed25519
 ```
 
-A key without a passphrase also works, but then the file itself is the only protection: anyone who can copy it can sign in to every connector. The tool never asks for an SSH password: if the key is refused, the run stops. Show the public half with:
+A key without a passphrase also works, but then the file itself is the only protection: anyone who can copy it can sign in to every connector. The tool never asks for an SSH password. If the key is refused, the tool says so with SSH's own reason and a hint (section 13), and an upgrade, a dry run or a repair stops before it asks for anything. Show the public half with:
 
 ```
 cat ~/.ssh/connector_ed25519.pub
@@ -320,7 +372,15 @@ You should see the server name with no password prompt. If you are asked for a p
 ssh-keygen -lf C:\ProgramData\ssh\ssh_host_ed25519_key.pub
 ```
 
+`Install-OpenSSHServer.ps1` shows the same fingerprint at its end, and writes it as `hostKey=` in its audit log on the connector, `C:\ProgramData\ssh\logs\Install-OpenSSHServer-audit.log`: that is where to read it after a Group Policy deployment.
+
 Answer `yes` only when they match. SSH then remembers the key and refuses the server if it ever changes. The tool accepts a host it has never seen without asking, so connecting once by hand like this before the first run is how every host key gets checked.
+
+If a connector's host key changes later (a rebuilt server, say), SSH refuses it, and the tool's message says "Host key verification failed". Remove the old key on the admin machine, then connect once by hand as above and check the new one:
+
+```
+ssh-keygen -R connector1.example.local
+```
 
 ### 4.7 Tell SSH which key to use (optional)
 
@@ -333,9 +393,11 @@ Host *.example.local
 
 The commands in this guide assume you have done this. If you have not, add `-SshKey ~/.ssh/connector_ed25519` to each one.
 
+If your SSH agent holds several keys, ssh offers them in turn, and a connector can stop it with "Too many authentication failures" before the right one. Add the line `IdentitiesOnly yes` under the same `Host` line: ssh then offers only the key named there.
+
 > **Which account?** Any account in the connector's local Administrators group works. The built-in local `administrator` was used in testing. Name a different account per connector with `SshUser` in the fleet file, or for a whole run with `-SshUser`.
 
-> **Default shell.** You do not need to change the OpenSSH default shell. The tool starts Windows PowerShell 5.1 by name. Testing was done on servers whose default shell had been set to PowerShell 7; the stock default (cmd.exe) is expected to work but has not been tested.
+> **Default shell.** You do not need to change the OpenSSH default shell. The tool starts Windows PowerShell 5.1 by name. Testing was done on servers whose default shell had been set to PowerShell 7; the stock default (cmd.exe) is expected to work but has not been tested. Where the default shell is PowerShell 7, do not upgrade PowerShell 7 over SSH: the upgrade ends the session and can stop half-way (section 13).
 
 ## 5. Or use WinRM (PowerShell remoting)
 
@@ -378,17 +440,32 @@ Kerberos Auth connectors are upgraded through a one-time scheduled task under th
 
 The staging folder holds the tool and the files it installs. It can be a local folder on the admin machine or a file share. It must be readable from the admin machine; the connectors do not need to reach it, because every file is copied to them.
 
-Clone or download this repository and use it as the staging folder. It already has the layout:
+Unzip the tool's ZIP file, or clone its repository, and use that folder as the staging folder. It already has the layout:
 
 ```
 <staging folder>/
     FleetDeploy/        the tool, your fleet file, and the FleetLogs folder
     Silent Install/     Install-AccessConnector.ps1 (runs the vendor installer)
+    Prerequisites/      set-up scripts: PowerShell 7, OpenSSH Server (section 4)
     Installers/         the connector installer .exe (you add this)
     Configs/            one es-config .json per tenant (you add these)
     ChildCerts/         the Kerberos PFX (Kerberos connectors only)
     TrustedCerts/       CA certificates to trust (optional)
 ```
+
+**A downloaded ZIP on Windows.** Windows marks a ZIP file that came from the internet or from an e-mail, and every file you unzip from it. PowerShell then refuses to run the scripts, with "... is not digitally signed. You cannot run this script on the current system". Before you unzip it, unblock the ZIP: right-click it, choose Properties, tick Unblock and click OK, or in PowerShell:
+
+```
+Unblock-File .\Access-Connector-Automated-Upgrade-<version>.zip
+```
+
+If it is already unzipped, unblock the files instead, in PowerShell in the unzipped folder:
+
+```
+Get-ChildItem -Recurse -File | Unblock-File
+```
+
+Starting PowerShell as `pwsh -ExecutionPolicy Bypass` also works, for that window only. macOS and Linux do not block the scripts.
 
 Add your own files:
 
@@ -524,7 +601,7 @@ Open a terminal on the admin machine, go to the `FleetDeploy` folder and start P
 ./Invoke-AccessConnectorUpgrade.ps1 -Mode Verify
 ```
 
-Each connector gets one line: installed version, services running, and for Kerberos connectors the keytab and the certificate served. This proves that sign-in works and the fleet file is right. Verify asks for no password. It installs nothing and changes no connector setting, but it does write a little on each connector: it creates `C:\ProgramData\AccessConnectorUpdate` if it is missing, locks it to Administrators and SYSTEM, copies the helper script into it, and adds a line to the tool's log there. So do not run it against a connector while another run is working on it. For a look that writes nothing at all, use `-Mode Discover` (section 7.2).
+Each connector gets one line: installed version, services running, and for Kerberos connectors the keytab and the certificate served. A line is red when something needs attention: a service down, the keytab empty or missing, or, for a group with a `Pfx`, the wrong certificate. Any red line makes the exit code 1 (14.26). This proves that sign-in works and the fleet file is right. Verify asks for no password. It installs nothing and changes no connector setting, but it does write a little on each connector: it creates `C:\ProgramData\AccessConnectorUpdate` if it is missing, locks it to Administrators and SYSTEM, copies the helper script into it, and adds a line to the tool's log there. So do not run it against a connector while another run is working on it. For a look that writes nothing at all, use `-Mode Discover` (section 7.2).
 
 ### 8.2 Dry run: rehearse one tenant
 
@@ -542,7 +619,7 @@ The checks run on every connector, also one that is already on the installer's v
 ./Invoke-AccessConnectorUpgrade.ps1 -Tenant TENANT1
 ```
 
-The tool shows the plan, asks you to type `YES`, then asks for the passwords once per tenant. Allow roughly ten minutes per connector, during which that connector's services are down. The run ends with a summary and writes a CSV and the connectors' logs to `FleetDeploy\FleetLogs`.
+The tool shows the plan, checks that it can sign in to each connector over SSH, asks you to type `YES`, then asks for the passwords once per tenant. Allow roughly ten minutes per connector, during which that connector's services are down. The run ends with a summary and writes a CSV and the connectors' logs to `FleetDeploy\FleetLogs`.
 
 If you are using WinRM, add `-Mode WinRM` to the dry run and the real run:
 
@@ -572,8 +649,8 @@ Passwords are only ever asked at prompts. A run started with no terminal to type
 Typing is hidden. Passwords are never written to the fleet file, a command line of this tool, or its logs.
 
 - Write accounts as `DOMAIN\name`, for example `EXAMPLE\svc-access`.
-- Every question comes before the first connector is touched.
-- Over SSH, a wrong domain admin password stops the run at the first Kerberos Auth connector, with nothing changed: it is tried once, not once per connector (with `-ContinueOtherTenants`, the other groups go on). Over WinRM, where that account is also the sign-in to the connectors, a real run stops at the first connector too, but a dry run tries the sign-in on every connector. Rehearse on one connector first, with `-Connector`.
+- Every question comes before anything is copied to or changed on a connector. Just before the first one, an SSH run signs in to every selected connector to check that it can. If one fails, the run stops there, before it asks anything, and names SSH's own reason, with a hint when it suggests one (section 13).
+- Over SSH, a wrong domain admin password stops the run at the first Kerberos Auth connector, with nothing changed: it is tried once, not once per connector (with `-ContinueOtherTenants`, the other groups go on). Over WinRM, where that account is also the sign-in to the connectors, a sign-in that a connector refuses stops the run at that connector too, in a dry run as well, so a wrong password is not tried on every connector. Rehearse on one connector first, with `-Connector`.
 - For a Kerberos Auth group, the dry run's service account check is a real sign-in attempt against the domain. A wrong password counts towards that account's lockout, so retype it with care rather than running again and again.
 
 ## 9. Kerberos Auth connectors
@@ -718,7 +795,7 @@ The tool uninstalls the connector and installs it fresh with the new set. The ve
 | `-AuditLog <path>` | One appended line per run: who ran what, and the outcome |
 | `-ErrorLog <path>` | The detail of each failure |
 
-The exit code is 0 when every selected connector succeeded and 1 otherwise, so a scheduler can tell.
+The exit code is 0 when every selected connector succeeded and 1 otherwise, so a scheduler can tell. `-Mode Verify` ends with 1 when a connector could not be read or has a red line (14.26).
 
 | Status | Meaning |
 |---|---|
@@ -728,14 +805,21 @@ The exit code is 0 when every selected connector succeeded and 1 otherwise, so a
 | `Failed` | The install script ended with an error: the installer failed, or a check stopped it (read `AccessConnector_Audit_*.log` in the connector's logs). Services that were running before are started again |
 | `Unhealthy` | Installed, but a check afterwards did not pass; the message says which |
 | `Skipped` | Not attempted because an earlier connector failed |
-| `Error` | The tool could not reach the connector or got no result back |
+| `Error` | The tool could not reach the connector, the connector refused the WinRM sign-in, the task could not be started under the account given, or no result came back |
 
 ## 13. If something goes wrong
 
 | What you see | What to do |
 |---|---|
+| "... is not digitally signed. You cannot run this script on the current system" | Windows blocked the scripts of a downloaded ZIP. Unblock them (section 6), or start PowerShell as `pwsh -ExecutionPolicy Bypass`. |
 | `ssh ... Permission denied` or a password prompt in your own test | The key is not accepted. Recheck section 4.4 and the `icacls` line. |
-| "cannot reach <host> over SSH or create C:\ProgramData\AccessConnectorUpdate" | This first step does not show SSH's own reason. Run the test of section 4.6 by hand, or `-Mode Discover -Connector <host>`, which shows it. |
+| "The SSH sign-in check failed on ... connector(s)" | The run stopped before it asked anything; nothing was changed. The line above it, one per connector, says why, with a hint when SSH's reason suggests one (next rows). Fix the sign-in, or leave those connectors out: the message names the others for `-Connector`. |
+| "cannot reach <host> over SSH: ... Permission denied (publickey)" | The key was not accepted. Name it with `-SshKey`, or add it to the SSH settings file (section 4.7). Test by hand with `ssh administrator@<host> hostname` (section 4.6). |
+| "cannot reach <host> over SSH: ... Host key verification failed" | The connector's host key has changed (a rebuilt server, say). Remove the old one with `ssh-keygen -R <host>`, then connect once by hand and check the new one (section 4.6). |
+| "cannot reach <host> over SSH: ... Connection timed out" (or refused, or no route to host) | Port 22 is not reachable from the admin machine: a firewall, or OpenSSH Server not running (sections 4.1, 4.2). When the connector answers ping and sshd is running, look at its endpoint-protection product: one with a firewall of its own can drop port 22 without a trace in Windows Firewall. Add an inbound rule there for `C:\Windows\System32\OpenSSH\sshd.exe`. A name that does not resolve says "Could not resolve hostname". |
+| "cannot reach <host> over SSH: ... Too many authentication failures" | ssh offered several keys, from an agent say, and the connector stopped before the right one. Name the key with `-SshKey`, and add `IdentitiesOnly yes` to the SSH settings file (section 4.7). |
+| "signed in to <host> over SSH, but could not create C:\ProgramData\AccessConnectorUpdate" (or, from the sign-in check, "could not run Windows PowerShell there") | SSH works, but the account is not an administrator on that connector, or Windows PowerShell did not start there; the message ends with the connector's own error. Use an account in its local Administrators group. |
+| "Could not sign in to <host> over WinRM as <account>" | The connector refused the account: a wrong name or password, an account that is locked out or disabled, or not an administrator there. That group stops there, and the whole run unless `-ContinueOtherTenants`, in a dry run too. Retype it as `DOMAIN\name`. |
 | "Files this run needs are missing" | A file named in the fleet file is not in the staging folder. The message lists each one, and names another copy of the folder if one has them. |
 | `DryRunFailed` | Read the lines above it: a wrong PFX or service account password, or an invalid configuration file. Nothing was changed. |
 | "Could not start the task as ..." | The domain admin account name or password was wrong. Nothing was changed. |
@@ -743,6 +827,10 @@ The exit code is 0 when every selected connector succeeded and 1 otherwise, so a
 | `keytab EMPTY` in Verify | Run `-Mode RepairKeytab`. |
 | Certificate shown as `SELF-SIGNED by the installer` | Run `-Mode RepairCertificate`. |
 | "writes PowerShell command parameters to its event log" | The server's module logging policy would record the passwords. Turn it off for that server while the run happens. |
+| An SSH session ended while PowerShell 7 was being upgraded, or `Install-PowerShell7.ps1` says "This run is inside an SSH session" | Upgrading PowerShell 7 over SSH ends the session when the OpenSSH default shell is pwsh, and can stop the install half-way. So the script refuses to install over SSH; `-CheckOnly` still works there. Run it at the console, by Remote Desktop or over WinRM. The tool itself is not affected: it starts Windows PowerShell by name. |
+| Installing OpenSSH Server (`Add-WindowsCapability`) seems to hang | On Windows 10 and 11 it can take more than an hour; on a server it is usually quick. Let it finish, and do not restart meanwhile: a restart stops the install. With no internet access, use `-Source` (14.6). |
+| sshd does not start, or stops at once; `sshd -T` or `sshd.exe -ddd` says "no hostkeys available", and the event logs show nothing | The host key files have permissions that sshd refuses. After an `ssh-keygen -A` typed in an elevated window, they can hold an entry for that admin account which `icacls /inheritance:r` does not remove. (Not elevated, `ssh-keygen -A` fails without a message.) For each `C:\ProgramData\ssh\ssh_host_*_key` file: `icacls <file> /setowner "NT AUTHORITY\SYSTEM"`, then `icacls <file> /remove "<that account>"`, then `icacls <file> /inheritance:r /grant SYSTEM:F /grant Administrators:F`; then `Restart-Service sshd`. `Install-OpenSSHServer.ps1` makes the same repair. |
+| A connector has no sshd after `Deploy-OpenSSH-GPO.ps1` | The startup script runs only while a computer starts: restart it (`gpupdate` alone does not run it). Then, elevated on that connector, `gpresult /r /scope computer` must list the GPO under Applied Group Policy Objects (Implementation Guide, section 4). |
 
 More cases are in `docs/Troubleshooting.md`.
 
@@ -810,7 +898,7 @@ Find the cases closest to yours in the tables below. Several can apply at once: 
 **You want:** the machine that needs the least set-up and has the most testing behind it.
 
 1. Pick a machine that reaches every connector on TCP port 22 (SSH). A Windows machine can use TCP port 5985 (WinRM) instead (14.2). The tool connects only to the connectors and reads the staging folder. It downloads nothing, so the admin machine needs no internet access.
-2. Install PowerShell 7 on it (quick start, step 1).
+2. Install PowerShell 7 on it (quick start, step 1). On Windows, `Prerequisites\Install-PowerShell7.cmd` installs or updates it; on a Mac, `Prerequisites/install-powershell7-macos.sh`. Run either again at any time to update it: they change nothing when it is current. Without internet access, see 14.6.
 3. For SSH, check that the SSH client is there. macOS has it, and on Linux it is the OpenSSH client package. On Windows it is the optional feature OpenSSH Client, which the second command adds in an elevated Windows PowerShell window:
 
 ```
@@ -827,10 +915,10 @@ Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0
 
 **Watch out:**
 
-- A connector server can be the admin machine once PowerShell 7 is installed on it. If it is also in the fleet file, the tool reaches it through its own SSH server, like any other connector. That has not been tried: do that connector last, on its own with `-Connector`, or from another machine.
+- A connector server can be the admin machine once PowerShell 7 is installed on it. Install or update it there at the console or by Remote Desktop: `Install-PowerShell7.ps1` refuses to run over SSH (section 13). If that server is also in the fleet file, the tool reaches it through its own SSH server, like any other connector. That has not been tried: do that connector last, on its own with `-Connector`, or from another machine.
 - On Linux, the message that names another copy of the staging folder finds only copies listed as full paths under `StagingFolders` in the fleet file. On macOS it also looks under `/Volumes`, and on Windows on every drive.
 
-**Tested:** every SSH mode, from a Mac. WinRM upgrades, from a Windows machine. Not yet proven: the SSH modes from a Windows or Linux admin machine, and a connector server running the tool against itself.
+**Tested:** every SSH mode, from a Mac. WinRM upgrades, from a Windows machine. Not yet proven: the SSH modes from a Windows or Linux admin machine, and a connector server running the tool against itself. The PowerShell 7 scripts in `Prerequisites` have been tested offline only.
 
 ### 14.2 SSH is not allowed on the connector servers
 
@@ -861,6 +949,7 @@ Test-WSMan connector1.example.local
 - The tool has no setting for WinRM over HTTPS (port 5986): it always uses port 5985. PowerShell remoting still encrypts what it carries, the passwords included.
 - The tool changes no WinRM setting on the admin machine. A server outside the domain, or one named by its IP address, needs Windows' own remoting settings (such as TrustedHosts), which the tool neither sets nor checks.
 - To type the sign-in once for every tenant instead of once per tenant, add `-Credential (Get-Credential)`.
+- A sign-in that a connector refuses ("Could not sign in to <host> over WinRM as ...") stops the run at that connector, in a dry run too, so a wrong password is not tried on every connector (section 13).
 
 **Tested:** WinRM upgrades of three connectors without Kerberos Auth, one at a time. Not yet proven: Kerberos Auth connectors over WinRM (section 5.2), and any WinRM run with version 1.4.0 of the tool or later.
 
@@ -896,7 +985,7 @@ Test-WSMan connector1.example.local
 
 **Watch out:**
 
-- Always name the group with `-Tenant`. An SSH run of every group stops at the first WinRM-only connector ("cannot reach ... over SSH"). A WinRM run of every group would also take the SSH group's Kerberos Auth connectors over WinRM, which is not proven.
+- Always name the group with `-Tenant`. An SSH run of every group stops at its sign-in check, before it asks anything, because the WinRM-only connectors do not answer over SSH ("cannot reach ... over SSH"). A WinRM run of every group would also take the SSH group's Kerberos Auth connectors over WinRM, which is not proven.
 - The repair modes reach only the SSH group.
 - SSH modes from a Windows admin machine are not yet proven. The proven pair is a Mac for the SSH group and a Windows machine for the WinRM group; both can work from one staging folder on a share.
 
@@ -916,6 +1005,8 @@ Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP*' |
     Set-NetFirewallRule -RemoteAddress 10.0.0.0/24
 ```
 
+`Install-OpenSSHServer.ps1 -AllowFrom 10.0.0.0/24` does the same as part of its run (section 4, the quick way), and names any other enabled rule that still lets port 22 in from any address. Through Group Policy, `Deploy-OpenSSH-GPO.ps1` refuses to run without `-AllowFrom` (unless `-AllowFromAnyAddress` is given) and passes it on to every connector in the OU.
+
 3. If SSH listens on another port, put that in the SSH settings file on the admin machine (section 4.7). The fleet file has no place for a port:
 
 ```
@@ -930,8 +1021,9 @@ Host *.example.local
 **Watch out:**
 
 - The health pages and the Kerberos certificate are checked on the connector itself, so they need no rule from the admin machine.
-- When the first connection fails, Verify and the upgrade modes say only "cannot reach <host> over SSH or create ...". Run the `ssh` test of section 4.6 by hand, or `-Mode Discover -Connector <host>`, to see SSH's own reason.
+- When a connection fails, the message gives SSH's own reason, and a hint for the usual ones. "Connection timed out" or "No route to host" means that the firewall does not let the port through from the admin machine.
 - The tool trusts a connector's host key the first time it sees one, so check each one by hand before the first run.
+- Two other firewalls can overrule the rule. When Group Policy manages a firewall profile and ignores local rules, set the limit in that policy; `Install-OpenSSHServer.ps1` says so when it sees this. An endpoint-protection product's own firewall can drop port 22 while ping still answers (section 13).
 - Each SSH connection must open within 15 seconds. The tool sends a keep-alive every 30 seconds, which keeps a long upgrade open through a firewall that drops idle connections.
 
 **Tested:** SSH and WinRM in the lab. No run is recorded across a DMZ firewall or with SSH on another port. The tool passes no port or settings file to `ssh`, so the port comes from OpenSSH's own settings file.
@@ -987,16 +1079,30 @@ Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 `
     -Source D:\ -LimitAccess
 ```
 
-2. Put everything in the staging folder: the installer, the configuration files, the PFX, the CA certificates and, if your version needs it, the Java4Shell patch (section 6). The tool copies it all to each connector, and its scripts download nothing there.
-3. Rehearse and run as usual (section 8).
-4. The connector service itself must still reach its Access tenant. With a cloud tenant, open the path Omnissa documents, or use a web proxy (14.7). The tool does not test this path.
+`Install-OpenSSHServer.ps1` takes the same folder (section 4, the quick way). Through Group Policy, give `Deploy-OpenSSH-GPO.ps1` a share that the computer accounts can read, as `-PayloadParameters @{ Source = '\\fileserver.example.local\FoD' }` (Implementation Guide, section 4).
+
+```
+.\Install-OpenSSHServer.ps1 'ssh-ed25519 AAAA...your public key...' `
+    -Source D:\ -LimitAccess
+```
+
+2. If the admin machine has no internet access either, install PowerShell 7 on it from a package you copy there. On a computer that has access, download from Microsoft's PowerShell releases page on GitHub the MSI for the admin machine's processor and the `hashes.sha256` of the same release, into one folder. Then, in an elevated Command Prompt on the admin machine, run the command below. It checks the package's Microsoft signature and, with `hashes.sha256` beside it, its SHA-256. The macOS script needs internet access.
+
+```
+Prerequisites\Install-PowerShell7.cmd -MsiSource D:\Packages\PowerShell
+```
+
+3. Put everything in the staging folder: the installer, the configuration files, the PFX, the CA certificates and, if your version needs it, the Java4Shell patch (section 6). The tool copies it all to each connector, and its scripts download nothing there.
+4. Rehearse and run as usual (section 8).
+5. The connector service itself must still reach its Access tenant. With a cloud tenant, open the path Omnissa documents, or use a web proxy (14.7). The tool does not test this path.
 
 **Watch out:**
 
 - A dry run proves the passwords and the files, not the connector's path to its tenant.
 - For Kerberos Auth, the keytab step needs the Windows features RSAT-AD-PowerShell and RSAT-ADDS-Tools. Before the change, check on each connector that both are installed: `Get-WindowsFeature RSAT-AD-PowerShell, RSAT-ADDS-Tools`.
+- The `-Source` folder must hold the Features on Demand of the server's exact Windows build.
 
-**Tested:** the tool's own steps are the proven SSH-mode steps, and none of them downloads anything. No lab connector was without internet access, so an install on such a server is not proven.
+**Tested:** the tool's own steps are the proven SSH-mode steps, and none of them downloads anything. No lab connector was without internet access, so an install on such a server is not proven. The scripts' `-Source` and `-MsiSource` have not run on a real computer; the offline tests cover `-MsiSource`.
 
 ### 14.7 Connectors that reach the internet through a web proxy
 
@@ -1045,7 +1151,7 @@ The simplest route, if someone can be there for the first few minutes: start a n
 C:\ProgramData\AccessConnectorUpdate\Run-Upgrade.cmd
 ```
 
-3. To run it at a set time instead: on each connector, in a Windows PowerShell window (not PowerShell 7) opened with Run as administrator, schedule it for a time on the connector's own clock. You type the passwords now, then your own Windows password, which Task Scheduler keeps so that it can run the job as you.
+3. To run it at a set time instead: on each connector, in a Windows PowerShell window (not PowerShell 7) opened with Run as administrator, schedule it for a time on the connector's own clock. You type the passwords now, then your own Windows password, which Task Scheduler keeps so that it can run the job as you. The job deletes itself, and with it your Windows password, when its run ends; a job that has not run 12 hours after its time is deleted by Task Scheduler. A time that has already passed on that clock is refused, and so is a new time while an earlier scheduled job on that connector is still running; nothing is written then.
 
 ```
 powershell -ExecutionPolicy Bypass -File `
@@ -1053,13 +1159,13 @@ powershell -ExecutionPolicy Bypass -File `
     -Prompt -Schedule "2027-01-15 22:30"
 ```
 
-4. Afterwards, check from the admin machine. Each connector also writes its result to `C:\ProgramData\AccessConnectorUpdate\Logs\result.json`.
+4. Afterwards, check from the admin machine. Each connector also writes its result to `C:\ProgramData\AccessConnectorUpdate\Logs\result.json`, and the job's screen output to `task-console_<date>_<time>.log` beside it.
 
 ```
 ./Invoke-AccessConnectorUpgrade.ps1 -Mode Verify -Tenant TENANT1
 ```
 
-5. Once a scheduled job has run, delete it on that connector in the same kind of window. The tool does not remove it, and Task Scheduler keeps your Windows password until it is deleted:
+5. To cancel a scheduled job before it runs, delete it on that connector in the same kind of window, and delete `C:\ProgramData\AccessConnectorUpdate\secrets.dat`, which holds the passwords you typed, encrypted for your account:
 
 ```
 Unregister-ScheduledTask -TaskName AccessConnectorUpgrade -Confirm:$false
@@ -1070,10 +1176,12 @@ Unregister-ScheduledTask -TaskName AccessConnectorUpgrade -Confirm:$false
 - There is no health gate between scheduled jobs: each one runs on its own, even if the one before failed. Schedule one connector per group per night and Verify it before you schedule the next, or leave a wide gap: a connector took 9 to 18 minutes in testing.
 - When you schedule, only an empty password is caught. A dry run from the admin machine beforehand checks what you type there, not what you type on the connector, so type carefully. A wrong PFX password stops the job before any service is stopped; a wrong configuration file password is found only by the installer.
 - After you schedule, run no upgrade, dry run or Stage against that connector until the job has run: they replace the job file it reads. Do not update the tool in between.
+- The job deletes itself as soon as its run ends, whatever the result, so Task Scheduler no longer shows it afterwards: read the result in the logs (step 4).
+- A job that never ran (the connector was off at that time, say) is deleted by Task Scheduler 12 hours after its time, but its `secrets.dat` stays on the connector: delete it (step 5).
 - The logs stay on each connector in `C:\ProgramData\AccessConnectorUpdate\Logs`. Nothing is copied to `FleetLogs`.
 - Stage needs SSH. With WinRM only, have someone start the WinRM run at the start of the window.
 
-**Tested:** Stage, then `Run-Upgrade.cmd` run by hand as a domain admin, on one connector with all four services and a usable keytab afterwards. Not yet run: `-Schedule`, and a staged dry-run job.
+**Tested:** Stage, then `Run-Upgrade.cmd` run by hand as a domain admin, on one connector with all four services and a usable keytab afterwards. Not yet run: `-Schedule` (and with it the job deleting itself), and a staged dry-run job.
 
 ### 14.9 Two forests with no trust, one admin machine
 
@@ -1238,8 +1346,9 @@ ssh 'EXAMPLE\admin@connector1.example.local' hostname
 - A Remote Desktop sign-in in Restricted Admin mode reaches the network as the server, not as you. The helper's check would pass, but the vendor set-up could not update the connector's account. Use an ordinary sign-in. (Not tested.)
 - `-Mode RepairCertificate` needs no domain admin, so it can still run over SSH as usual.
 - To rebuild an empty keytab the same way, run the helper on the connector with `-RepairKeytab`, signed in there as a domain admin (section 5.1). Not tested by hand.
+- To run it at a set time instead, the domain admin schedules it on the server as in 14.8, step 3. The job runs under that account, and deletes itself, with the account's password that Task Scheduler keeps, when its run ends.
 
-**Tested:** Stage, then `Run-Upgrade.cmd` signed in as a domain admin, on one connector with four services and a usable keytab afterwards.
+**Tested:** Stage, then `Run-Upgrade.cmd` signed in as a domain admin, on one connector with four services and a usable keytab afterwards. Not yet run: a scheduled job (`-Schedule`).
 
 ### 14.15 A connector server that is not in the domain
 
@@ -1307,7 +1416,7 @@ ssh 'EXAMPLE\admin@connector1.example.local' hostname
 - Hand edits to the connector's service files, such as Java memory settings, are not carried through an upgrade. Note them first.
 - A connector that Discover could not reach gets a row with no `Group`, which the import refuses. Fix the connection and run Discover again, or fill the row in by hand.
 
-**Tested:** Discover on ten connectors, and its drafts imported back, matching the hand-written fleet files. Upgrades one connector at a time, over SSH and over WinRM. Not yet: an upgrade from a fleet file written by `-ImportFleet`, a workbook saved by Microsoft Excel itself, the certificate step inside a real upgrade, and Discover filling `Installer` with no fleet file (offline tests only).
+**Tested:** Discover on ten connectors, and its drafts imported back, matching the hand-written fleet files. Upgrades one connector at a time, over SSH and over WinRM. The template saved by Microsoft Excel for Mac as a new workbook imported with the same result as the template itself (14.27). Not yet: a Discover draft saved as a workbook by Excel, an upgrade from a fleet file written by `-ImportFleet`, the certificate step inside a real upgrade, and Discover filling `Installer` with no fleet file (offline tests only).
 
 ### 14.17 A new tenant and new servers, nothing installed yet
 
@@ -1315,7 +1424,7 @@ ssh 'EXAMPLE\admin@connector1.example.local' hostname
 
 **You want:** every connector installed fresh with the same settings.
 
-1. Join the servers to the domain if they will run Kerberos Auth or Virtual App, and install Windows updates and restart them: the tool warns when a restart is pending. Stand up SSH (section 4), or check WinRM (section 5).
+1. Join the servers to the domain if they will run Kerberos Auth or Virtual App, and install Windows updates and restart them: the tool warns when a restart is pending. Stand up SSH (section 4), or check WinRM (section 5). For SSH, `Install-OpenSSHServer.ps1` does the server's part on each new server, or on all of them in one command from a Windows admin machine (section 4, the quick way). If the new servers' computer accounts are in one OU, you can link `Deploy-OpenSSH-GPO.ps1`'s GPO to it before that restart instead: the restart then sets up SSH as well (Implementation Guide, section 4). Either way, check each host key (section 4.6).
 2. Copy `fleet.example.xlsx` to `fleet.xlsx` and fill in one row per server, with the group settings on the group's first row (section 7.1). Check it, then import it.
 3. Rehearse on the first server only. Verify shows it as "no connector services installed" until it is installed.
 
@@ -1369,7 +1478,7 @@ ssh 'EXAMPLE\admin@connector1.example.local' hostname
 
 **You want:** the tenants done side by side to save time, knowing exactly when a tenant could be left with no connector.
 
-1. A day or more before the window, dry run every group in one command. A connector that ends `DryRunFailed` stops only the rest of its own group. A domain admin account that cannot start the work on a connector ("Could not start the task as ...") stops the whole run, unless you add `-ContinueOtherTenants` as here; then one run shows the first problem of each group. The installer copied now is not copied again by the real run.
+1. A day or more before the window, dry run every group in one command. A connector that ends `DryRunFailed` stops only the rest of its own group. A domain admin account that cannot start the work on a connector ("Could not start the task as ..."), or over WinRM a sign-in that a connector refuses, stops the whole run, unless you add `-ContinueOtherTenants` as here; then one run shows the first problem of each group. A connector that SSH cannot sign in to stops the run at its sign-in check, before any question, even with `-ContinueOtherTenants`: fix it, or leave it out with `-Connector`. The installer copied now is not copied again by the real run.
 
 ```
 ./Invoke-AccessConnectorUpgrade.ps1 -DryRun -ContinueOtherTenants
@@ -1389,7 +1498,7 @@ ssh 'EXAMPLE\admin@connector1.example.local' hostname
 
 **Watch out:**
 
-- `-Parallel` starts every selected connector at once: each tenant is offline until its connectors finish, and one failure stops nothing. Keep it for labs, and for tenants with one connector each.
+- `-Parallel` starts every selected connector at once: each tenant is offline until its connectors finish, and one failure stops nothing, except over WinRM a sign-in that a connector refuses: the connectors not yet started are then left alone. Keep it for labs, and for tenants with one connector each.
 - Two connectors of one tenant can also be down together when one was already down before the run, or when two runs are started at once (by two people, or from two staging folders): nothing links separate runs.
 - Each set of connectors takes as long as its slowest one: 9 to 18 minutes per connector in testing.
 
@@ -1428,7 +1537,7 @@ ssh 'EXAMPLE\admin@connector1.example.local' hostname
 
 **You want:** the connector installed fresh with its group's settings and, for a replacement, the old server retired while the tenant stays online.
 
-1. Build the server to Omnissa's requirements, join it to the domain if it will run Kerberos Auth or Virtual App, then install Windows updates and restart it. Open SSH (and check its host key, section 4.6), or check WinRM.
+1. Build the server to Omnissa's requirements, join it to the domain if it will run Kerberos Auth or Virtual App, then install Windows updates and restart it. Open SSH with `Install-OpenSSHServer.ps1` (section 4, the quick way), or through the GPO of `Deploy-OpenSSH-GPO.ps1` if the server's account is in an OU it is linked to (14.17), and check its host key (section 4.6). Or check WinRM.
 2. Kerberos Auth: the group's PFX must name the new server as well (14.11). If a load balancer is in front, add the server to it.
 3. Add the server to its group's `Connectors`, or to a group of its own with the same `ConfigFile` if it needs other services (section 11.3).
 4. Rehearse and install on that server only (section 10). Then check it in Verify, in the Access console, and with a sign-in through it.
@@ -1575,14 +1684,14 @@ ssh 'EXAMPLE\admin@connector1.example.local' hostname
 
 **You want:** a report of each one (version, services, keytab, certificate) for a review or an audit, or after Windows patching: once, or every night, with nothing installed.
 
-1. Run Verify (section 8.1). Each connector gets one line. It is green when healthy; red when a service is down, the keytab is empty, or the certificate is wrong or has expired; yellow when nothing is installed or a Java process lacks the Java4Shell patch flag. Add `-Tenant` or `-Connector` to narrow it. Verify needs a fleet file, but not the installer or the configuration files. With only a list of names, use Discover (step 4).
+1. Run Verify (section 8.1). Each connector gets one line. It is green when healthy; red when a service is down, the keytab is empty or missing, or (for a group with a `Pfx`) the certificate is wrong or has expired; yellow when nothing is installed or a Java process lacks the Java4Shell patch flag. A red line makes the exit code 1, and the error log (`-ErrorLog`) names what is red on each connector. Add `-Tenant` or `-Connector` to narrow it. Verify needs a fleet file, but not the installer or the configuration files. With only a list of names, use Discover (step 4).
 2. To keep the report, put `pwsh` in front and send the output to a file: `>` then catches every line, as plain text.
 
 ```
 pwsh ./Invoke-AccessConnectorUpgrade.ps1 -Mode Verify > ./verify-report.txt
 ```
 
-3. Every night: have a scheduler run this line in the `FleetDeploy` folder, through a shell (as cron does), because `>` is the shell's. Then search the file for `[ERROR]` (red lines) and `[WARN ]` (yellow lines). Verify asks no questions; `-NonInteractive` makes a run stop instead of waiting if anything ever does.
+3. Every night: have a scheduler run this line in the `FleetDeploy` folder, through a shell (as cron does), because `>` is the shell's. Its exit code is 1 when a line is red or a connector could not be read, so the scheduler can raise an alert; the file says which. Search it for `[ERROR]` (red lines) and `[WARN ]` (yellow lines). Verify asks no questions; `-NonInteractive` makes a run stop instead of waiting if anything ever does.
 
 ```
 pwsh -NonInteractive ./Invoke-AccessConnectorUpgrade.ps1 -Mode Verify > verify.txt
@@ -1593,12 +1702,12 @@ pwsh -NonInteractive ./Invoke-AccessConnectorUpgrade.ps1 -Mode Verify > verify.t
 **Watch out:**
 
 - Verify is not strictly read-only. On each connector it creates `C:\ProgramData\AccessConnectorUpdate` if it is missing, locks it to Administrators and SYSTEM, copies the helper script into it, and adds a line to the tool's own log there. It installs and changes nothing else. Do not run it while another run is using that connector.
-- The exit code is 1 only when a connector could not be read. A red line still ends with exit code 0, so search the output.
+- A yellow line keeps exit code 0, so a scheduler that looks only at the exit code does not see it: search the output for `[WARN ]` as well.
 - Verify marks a certificate only once it has expired. Read the `to <date>` on each line to plan a renewal (14.30).
 - A scheduler cannot type an SSH key passphrase. Its account needs an SSH agent that holds the key, or a key of its own with no passphrase that only it can read (section 4.3). Connect once by hand as that account, to check each host key.
 - On a connector version that does not use the Java4Shell patch, every line is yellow (`java flag 0/<n>`): search for `[ERROR]` only.
 
-**Tested:** Verify on all ten lab connectors, many times, matching independent checks, and Discover on all ten. Not yet: Verify from a real scheduler.
+**Tested:** Verify on all ten lab connectors, many times, matching independent checks, and Discover on all ten. Not yet: Verify from a real scheduler, and Verify with 1.5.1 against a connector: its first SSH step now goes through a new transport, and its exit code 1 on a red line is new; both have run in the offline tests only.
 
 ### 14.27 The fleet kept in Excel: change it and import it again
 
@@ -1628,7 +1737,7 @@ pwsh -NonInteractive ./Invoke-AccessConnectorUpgrade.ps1 -Mode Verify > verify.t
 - Excel turns `26.10` in an ordinary cell into `26.1`. The template's `Fleet` sheet is formatted as Text; a workbook saved from Discover's CSV file is not, so format its version columns as Text before you type in them.
 - Backup copies are never deleted. Remove old ones yourself.
 
-**Tested:** Discover's drafts imported into scratch copies of the hand-written fleet files, which hold groups, with every setting the same apart from `ExpectVersionPrefix` (blank by design, and named by the import's note on settings the workbook leaves blank) and one real difference on a connector; and a file with no groups replaced without `YES`, with a copy kept. Offline only: the note naming the groups and connectors the workbook does not hold. Not yet: a workbook saved by Microsoft Excel itself, and a fleet file written by the import used for a real run.
+**Tested:** Discover's drafts imported into scratch copies of the hand-written fleet files, which hold groups, with every setting the same apart from `ExpectVersionPrefix` (blank by design, and named by the import's note on settings the workbook leaves blank) and one real difference on a connector; and a file with no groups replaced without `YES`, with a copy kept. Offline only: the note naming the groups and connectors the workbook does not hold. In Microsoft Excel for Mac (16.115.1), the template opened with no repair prompt and kept its Text format (`26.10` typed into an empty `ExpectVersionPrefix` cell stayed `26.10`), and a copy saved by Excel imported with exactly the same plan as the template. Not yet: Excel for Windows, and a fleet file written by the import used for a real run.
 
 ### 14.28 Evidence for change control
 
@@ -1643,7 +1752,7 @@ pwsh ./Invoke-AccessConnectorUpgrade.ps1 -Mode Verify -AuditLog ./logs/ `
     > ./verify-before.txt
 ```
 
-2. Rehearse and run the change with `-AuditLog` and `-ErrorLog` on every command. Given a folder, the tool writes `connector-fleet-audit.log` and `connector-fleet-errors.log` in it. The audit log gets one line per run: the time, the user, the admin machine, the tool version, the mode, whether it was a dry run, the outcome, the number of connectors and the duration. For an upgrade, a dry run or a repair, the line also names the groups and says how many connectors failed.
+2. Rehearse and run the change with `-AuditLog` and `-ErrorLog` on every command. Given a folder, the tool writes `connector-fleet-audit.log` and `connector-fleet-errors.log` in it. The audit log gets one line per run: the time, the user, the admin machine, the tool version, the mode, whether it was a dry run, the outcome, the number of connectors and the duration. For an upgrade, a dry run or a repair, the line also names the groups and says how many connectors failed; for Verify, how many could not be read and how many had a red line.
 
 ```
 ./Invoke-AccessConnectorUpgrade.ps1 -Tenant TENANT1 `
@@ -1732,7 +1841,7 @@ pwsh ./Invoke-AccessConnectorUpgrade.ps1 -Mode Verify -AuditLog ./logs/ `
 **You want:** everyone on the same tool and fleet without getting in each other's way, a record of who ran what, and the tool updated once for everyone.
 
 1. Leave `StagingRoot` out of the fleet file. The tool then uses the folder above `FleetDeploy`, so the same file works from `/Volumes/...` on a Mac and from `\\server\share\...` on Windows.
-2. Give each admin machine its own SSH key, authorise every public key on every connector (section 4.4 adds one line per key), and check each host key once from each machine (section 4.6).
+2. Give each admin machine its own SSH key, authorise every public key on every connector (section 4.4 adds one line per key), and check each host key once from each machine (section 4.6). `Install-OpenSSHServer.ps1` takes several keys in one run (`-PublicKey` with a list, or `-PublicKeyFile` with one key per line) and only adds them, so a key authorised earlier stays; `Deploy-OpenSSH-GPO.ps1` does the same for every connector in an OU.
 3. Agree who runs which group, and when. Everyone adds `-AuditLog` and `-ErrorLog` naming the same folder, so one audit log shows every run, with its user and machine.
 4. To update the tool, pick a time when nobody is running it. In a clone of the repository, `git pull`: fleet files, workbooks, installers, configuration files, certificates and logs are not tracked, so a pull leaves them alone. Otherwise copy over the two `FleetDeploy` scripts and `Silent Install\Install-AccessConnector.ps1`, keeping the old ones (Implementation Guide, section 10). Then check that both `FleetDeploy` scripts show the same version in `-Help`, and read `CHANGELOG.md`.
 
@@ -1740,7 +1849,7 @@ pwsh ./Invoke-AccessConnectorUpgrade.ps1 -Mode Verify -AuditLog ./logs/ `
 
 - There is no lock between admin machines, and the audit line is written only when a run ends. Two admins must never run against the same connector at the same time.
 - Both `FleetDeploy` scripts must be the same version. Update every copy of the staging folder at the same time, and not while a scheduled job (14.8) is still waiting on a connector.
-- When an admin or an admin machine leaves, delete its key's line from `C:\ProgramData\ssh\administrators_authorized_keys` on every connector.
+- When an admin or an admin machine leaves, delete its key's line from `C:\ProgramData\ssh\administrators_authorized_keys` on every connector. Neither script removes a key, and a key taken out of the GPO stays trusted on the connectors that already ran it. `Deploy-OpenSSH-GPO.ps1 -Help` (UNDOING IT) has a command to run on each connector.
 
 **Tested:** the fleet file chosen with `-Fleet` and by default, and Verify from both staging copies after an update. Not yet: SSH modes from a Windows machine, several admins at once, and updating by `git pull`.
 
@@ -1755,7 +1864,7 @@ These come up when planning a roll-out. Each has a way around it.
 | A port, jump host or other SSH option for a connector in the fleet file | A connector entry holds only `Host` and `SshUser` | Put them in the SSH settings file on the admin machine (14.4, 14.5) |
 | Choosing SSH or WinRM per connector | `-Mode` applies to the whole run | One group per route, each run with `-Tenant` (14.3) |
 | Connectors that allow neither SSH nor WinRM | Every mode that contacts a connector needs one of them | Copy the files to the server yourself and run `Install-AccessConnector.ps1` there by hand (Command Reference). That route is outside the tool's testing. |
-| An upgrade started by a scheduler on the admin machine, or passwords kept for later runs | Passwords are only ever asked at prompts; a run with no terminal stops at the first one, with nothing changed | Stage, then `-Schedule` on each connector, which keeps them encrypted there until the job runs (14.8) |
+| An upgrade started by a scheduler on the admin machine, or passwords kept for later runs | Passwords are only ever asked at prompts; a run with no terminal stops at the first one, with nothing changed | Stage, then `-Schedule` on each connector, which keeps them encrypted there until the job runs; the job then deletes itself, and Task Scheduler's copy of your Windows password with it (14.8) |
 | Going back to an older version | The tool never installs an older version over a newer one | Restore the snapshot, or uninstall by hand and clean install the older version (14.25) |
 | A snapshot before the change, or an automatic roll-back | The tool copies the keytab and the Kerberos configuration and restarts services after a failed install, but does not snapshot the server or undo an upgrade | Snapshot or back up the server before the window |
 | Retiring a connector | There is no uninstall-only mode, and the tool never changes the Access console | Do it by hand (14.21, step 5) |
@@ -1769,8 +1878,9 @@ These come up when planning a roll-out. Each has a way around it.
 | The Kerberos certificate step on connectors in FIPS mode or with a proxy account | The vendor script would clear the stored proxy password, and FIPS mode is untested with it | The installer's Add/Remove Services on the server |
 | A warning before the Kerberos certificate expires | Verify marks a certificate only once it has expired | Read the dates in Verify; the repair's dry run notes a PFX that expires within 30 days (14.30) |
 | A lock between two admins' runs | Nothing links separate runs | Agree who runs which group, and when (14.31) |
+| Removing an SSH key from many connectors | The tool never changes the connectors' SSH set-up, and the scripts in `Prerequisites` only add keys, also through Group Policy | Delete the key's line from `C:\ProgramData\ssh\administrators_authorized_keys` on each connector (14.31); `Deploy-OpenSSH-GPO.ps1 -Help` (UNDOING IT) has a command for it |
 | Removing the staged files from a connector after a run | There is no clean-up option yet | Delete them by hand if your policy requires it; keep `KeytabBackup` and `CertBackup` while you may need to go back |
-| A health report that a monitoring tool can read | Verify's exit code reflects only the connectors it could not read | Save its output and search it (14.26) |
+| A health report that a monitoring tool can read | Verify gives text and an exit code: 1 when a connector could not be read or has a red line, 0 otherwise, yellow lines included. There is no structured report | Use the exit code; save the output and search it for the detail (14.26) |
 
 ## 16. Where to read more
 
@@ -1785,6 +1895,7 @@ These come up when planning a roll-out. Each has a way around it.
 | `docs/Engineering-Notes.md` | What was learned about the vendor installer |
 | `docs/Validation-Record.md` | What has been proven in testing, and what has not |
 | `CHANGELOG.md`, `ROADMAP.md` | History and what is planned |
+| The scripts in `Prerequisites` | PowerShell 7 for the admin machine, OpenSSH Server for the connectors: each script explains itself with `-Help` (the macOS one with `--help`) |
 
 <!-- disclaimer -->
 > [!CAUTION]
