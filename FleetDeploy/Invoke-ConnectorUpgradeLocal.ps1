@@ -34,7 +34,7 @@ param(
     [switch]$Help
 )
 
-$script:Version  = '1.5.0'
+$script:Version  = '1.5.1'
 $script:UiWidth  = 78
 $script:Name     = 'Invoke-ConnectorUpgradeLocal.ps1'
 $script:Started  = Get-Date
@@ -131,7 +131,7 @@ function Show-Help {
     Write-UiParam '-JobFile <path>' 'Job JSON staged beside this script. Default: job.json in this script folder.'
     Write-UiParam '-Prompt' 'Ask for the passwords at hidden prompts. Use when run by hand.'
     Write-UiParam '-SecretsFromStdin' 'Read four base64 lines (config, PFX, service account, proxy; empty where not needed) from standard input. Used by SSH mode.'
-    Write-UiParam '-Schedule <when>' 'With -Prompt: register a one-time scheduled task for the given local time (yyyy-MM-dd HH:mm) under the signed-in account, instead of running now.'
+    Write-UiParam '-Schedule <when>' 'With -Prompt: register a one-time scheduled task for the given local time (yyyy-MM-dd HH:mm) under the signed-in account, instead of running now. The task deletes itself, and with it the stored Windows password, when the run ends, or 12 hours after that time if it has not run by then. Its output goes to Logs\task-console_<yyyyMMdd_HHmm>.log. Refused, with nothing written: a time that has passed, and a time given while an earlier scheduled run is still running. Not with -RunAsUser or -RunAsTask.'
     Write-UiParam '-SecretsFile <path>' 'Secrets file written by -Schedule. Deleted after use.'
     Write-UiParam '-...Password <s>' 'Four SecureString parameters, -ConfigFilePassword, -SslCertPassword, -ServiceAccountPassword and -ProxyPassword, carry the passwords when another script calls this one (WinRM mode).'
     Write-UiParam '-VerifyOnly' 'Change nothing; report version, services and patch state.'
@@ -1004,6 +1004,38 @@ function Write-Result { param($Result, [string]$LogDir)
     if ($LogDir) { try { Set-Content -LiteralPath (Join-Path $LogDir 'result.json') -Value $json -Encoding utf8 } catch { } }
     Write-Host ('RESULT_JSON:' + $json)
 }
+function Get-TaskCommand { param([string]$ScriptPath, [string]$JobFile, [string]$SecretsFile, [string]$Extra, [switch]$SkipDomainCheck, [string]$AuditLog, [string]$ErrorLog)
+    # The command a one-time task runs (the run-as task, -Schedule): this script again under
+    # Windows PowerShell, -NonInteractive (anything that would ask a question fails at once instead
+    # of waiting where nobody can answer), the job and secrets files when given, $Extra (such as
+    # ' -RepairKeytab'), and the switches of this run that the task needs. Every path must be a
+    # full path: a task starts in System32.
+    $c = 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $ScriptPath + '"'
+    if ($JobFile) { $c += ' -JobFile "' + $JobFile + '"' }
+    if ($SecretsFile) { $c += ' -SecretsFile "' + $SecretsFile + '"' }
+    if ($Extra) { $c += $Extra }
+    if ($SkipDomainCheck) { $c += ' -SkipDomainCheck' }
+    if ($AuditLog) { $c += ' -AuditLog "' + $AuditLog + '"' }
+    if ($ErrorLog) { $c += ' -ErrorLog "' + $ErrorLog + '"' }
+    return $c
+}
+function Get-SelfDeletingTaskArgument { param([string]$Inner, [string]$ConsoleLog, [string]$TaskName)
+    # The cmd.exe argument of a one-time task: run $Inner with no standard input and its output in
+    # $ConsoleLog, then delete the task by name, and with it the Windows password Task Scheduler
+    # keeps for it, however the run ended. The run-as task and -Schedule both use this.
+    return ('/s /c "' + $Inner + ' < NUL > "' + $ConsoleLog + '" 2>&1 & schtasks.exe /Delete /TN "' + $TaskName + '" /F >NUL 2>&1"')
+}
+function Get-ScheduleProblem { param([datetime]$When, [string]$Text, [string]$TaskName)
+    # Why -Schedule must not register its task now, or '' when it may. A time that has passed: a
+    # one-time task whose start time is past never runs. A task of that name that is running: an
+    # earlier scheduled run, which deletes the task by name when it ends, and so would delete the
+    # new registration too, leaving its secrets.dat behind.
+    $now = Get-Date
+    if ($When -le $now) { return ("the time given, $Text, has already passed on this server's clock (now " + $now.ToString('yyyy-MM-dd HH:mm') + ')') }
+    $old = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if ($old -and [string]$old.State -eq 'Running') { return "a task named $TaskName is running on this server now (an earlier scheduled run is still working); schedule again when it has ended" }
+    return ''
+}
 
 # ====================================================================== main
 Initialize-UiStyle
@@ -1018,6 +1050,13 @@ if (-not $AuditLog) { $AuditLog = $logDir + '\' }
 if (-not $ErrorLog) { $ErrorLog = $logDir + '\' }
 $script:AuditPath = Resolve-LogPath -Value $AuditLog -DefaultName 'connector-upgrade-audit.log'
 $script:ErrorPath = Resolve-LogPath -Value $ErrorLog -DefaultName 'connector-upgrade-errors.log'
+# The log switches given, as full paths, for a task that runs this script again (Get-TaskCommand).
+# Without them, the task would write to the Logs folder beside this script.
+$script:TaskAuditLog = ''; $script:TaskErrorLog = ''
+try {
+    if ($PSBoundParameters.ContainsKey('AuditLog') -and $script:AuditPath) { $script:TaskAuditLog = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($script:AuditPath) }
+    if ($PSBoundParameters.ContainsKey('ErrorLog') -and $script:ErrorPath) { $script:TaskErrorLog = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($script:ErrorPath) }
+} catch { }
 
 # switch conflicts
 $modes = @($SecretsFromStdin.IsPresent, $Prompt.IsPresent, [bool]$SecretsFile, [bool]$ConfigFilePassword) | Where-Object { $_ }
@@ -1038,6 +1077,7 @@ if ($VerifyOnly) {
     if ($modes.Count -gt 1) { Write-ErrorEntry 'Use only one of -SecretsFromStdin, -Prompt, -SecretsFile or the password parameters.' 'args'; Write-AuditEntry 'FAILED' 'args'; exit 1 }
     if ($modes.Count -eq 0) { Write-ErrorEntry 'No secret source given. Use -Prompt when running by hand (see -Help).' 'args'; Write-AuditEntry 'FAILED' 'args'; exit 1 }
     if ($Schedule -and -not $Prompt) { Write-ErrorEntry '-Schedule needs -Prompt (the passwords are collected now and stored for the task).' 'args'; Write-AuditEntry 'FAILED' 'args'; exit 1 }
+    if ($Schedule -and ($RunAsUser -or $RunAsTask)) { Write-ErrorEntry '-Schedule cannot be used with -RunAsUser or -RunAsTask: the run-as task starts the work now. Sign in as the account the job is to run under and use -Prompt -Schedule.' 'args'; Write-AuditEntry 'FAILED' 'args'; exit 1 }
 }
 
 $isAdmin = (New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -1062,6 +1102,8 @@ if ($RepairKeytab -or $RepairCertificate) {
 } else {
     if (-not $JobFile) { $JobFile = Join-Path $here 'job.json' }
     if (-not (Test-Path -LiteralPath $JobFile)) { Write-ErrorEntry "Job file not found: $JobFile" 'precheck'; Write-AuditEntry 'FAILED' 'precheck'; exit 1 }
+    # a full path, for a task that runs this script again: a task starts in System32
+    $JobFile = (Resolve-Path -LiteralPath $JobFile).ProviderPath
     $job = Get-Content -Raw -LiteralPath $JobFile | ConvertFrom-Json
 }
 $needSvc = [bool](@($job.Services) | Where-Object { $_ -in 'KerberosAuthService','VirtualAppService' })
@@ -1170,8 +1212,7 @@ if (($RunAsTask -or $RunAsUser) -and -not $RepairCertificate) {
         # -NonInteractive and an empty standard input: anything that tries to ask a question fails
         # at once instead of waiting where nobody can answer.
         if ($RepairKeytab) {
-            $inner = 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -RepairKeytab' -f $MyInvocation.MyCommand.Path
-            if ($CheckOnly) { $inner += ' -CheckOnly' }
+            $inner = Get-TaskCommand -ScriptPath $MyInvocation.MyCommand.Path -Extra $(if ($CheckOnly) { ' -RepairKeytab -CheckOnly' } else { ' -RepairKeytab' }) -AuditLog $script:TaskAuditLog -ErrorLog $script:TaskErrorLog
         } else {
             # Secrets for the task: machine-scope protected, readable by Administrators and SYSTEM
             # only, and deleted by the task as soon as it has read them.
@@ -1184,13 +1225,11 @@ if (($RunAsTask -or $RunAsUser) -and -not $RepairCertificate) {
             if ($ServiceAccountPassword) { $o.Svc = Protect-MachineText (ConvertTo-PlainText $ServiceAccountPassword) }
             if ($ProxyPassword)          { $o.Proxy = Protect-MachineText (ConvertTo-PlainText $ProxyPassword) }
             Set-Content -LiteralPath $sfPath -Value ($o | ConvertTo-Json) -Encoding ascii -ErrorAction Stop
-            $inner = 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -JobFile "{1}" -SecretsFile "{2}"' -f $MyInvocation.MyCommand.Path, $JobFile, $sfPath
-            if ($SkipDomainCheck) { $inner += ' -SkipDomainCheck' }
+            $inner = Get-TaskCommand -ScriptPath $MyInvocation.MyCommand.Path -JobFile $JobFile -SecretsFile $sfPath -SkipDomainCheck:$SkipDomainCheck -AuditLog $script:TaskAuditLog -ErrorLog $script:TaskErrorLog
         }
         # The task removes itself, and with it the stored password, as soon as the work ends. That
         # way cleanup does not depend on this process surviving a dropped connection or Ctrl+C.
-        $taskArg = '/s /c "' + $inner + ' < NUL > "' + $conLog + '" 2>&1 & schtasks.exe /Delete /TN "' + $taskName + '" /F >NUL 2>&1"'
-        $action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument $taskArg
+        $action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument (Get-SelfDeletingTaskArgument -Inner $inner -ConsoleLog $conLog -TaskName $taskName)
         if ($asSystem) {
             $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
             Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Force -ErrorAction Stop | Out-Null
@@ -1289,24 +1328,41 @@ if ($RepairCertificate) { exit (Invoke-CertificateRepair -Here $here -LogDir $lo
 
 # ---- schedule instead of running now
 if ($Schedule) {
+    $taskName = 'AccessConnectorUpgrade'
     try {
         $when = [datetime]::ParseExact($Schedule, 'yyyy-MM-dd HH:mm', $null)
+        # Refused before anything is written: a time that has passed, or a task of this name that
+        # is running now (Get-ScheduleProblem). Checked again after the password prompt below.
+        $why = Get-ScheduleProblem -When $when -Text $Schedule -TaskName $taskName
+        if ($why) { throw $why }
+        $acct = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $acctPw = Read-UiSecret "Windows password for $acct (stored by Task Scheduler to run the task)"
+        $plain = ConvertTo-PlainText $acctPw; Register-Secret $plain
+        $why = Get-ScheduleProblem -When $when -Text $Schedule -TaskName $taskName
+        if ($why) { throw $why }
         $sfPath = Join-Path $here 'secrets.dat'
         $o = @{ Cfg = (ConvertFrom-SecureString $ConfigFilePassword) }
         if ($SslCertPassword) { $o.Pfx = ConvertFrom-SecureString $SslCertPassword }
         if ($ServiceAccountPassword) { $o.Svc = ConvertFrom-SecureString $ServiceAccountPassword }
         if ($ProxyPassword) { $o.Proxy = ConvertFrom-SecureString $ProxyPassword }
         Set-Content -LiteralPath $sfPath -Value ($o | ConvertTo-Json) -Encoding utf8
-        $acct = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-        $acctPw = Read-UiSecret "Windows password for $acct (stored by Task Scheduler to run the task)"
-        $plain = ConvertTo-PlainText $acctPw; Register-Secret $plain
-        $arg = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -JobFile "{1}" -SecretsFile "{2}"' -f $MyInvocation.MyCommand.Path, $JobFile, $sfPath
-        $action  = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg
+        $conLog = Join-Path $logDir ("task-console_{0}.log" -f $when.ToString('yyyyMMdd_HHmm'))
+        # As the run-as task does: the task deletes itself, and with it the stored Windows password,
+        # as soon as the run ends. -NonInteractive and an empty standard input make anything that
+        # would ask a question fail at once, so the run always ends and the delete always comes.
+        # -SkipDomainCheck and the log switches given here are passed on to the run.
+        $inner = Get-TaskCommand -ScriptPath $MyInvocation.MyCommand.Path -JobFile $JobFile -SecretsFile $sfPath -SkipDomainCheck:$SkipDomainCheck -AuditLog $script:TaskAuditLog -ErrorLog $script:TaskErrorLog
+        $action  = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument (Get-SelfDeletingTaskArgument -Inner $inner -ConsoleLog $conLog -TaskName $taskName)
         $trigger = New-ScheduledTaskTrigger -Once -At $when
-        Register-ScheduledTask -TaskName 'AccessConnectorUpgrade' -Action $action -Trigger $trigger -User $acct -Password $plain -RunLevel Highest -Force -ErrorAction Stop | Out-Null
+        # And if it never runs (the server is off at that time, say), Task Scheduler deletes it
+        # once the trigger has expired, 12 hours after the start time: far longer than a run takes.
+        $expires = $when.AddHours(12)
+        $trigger.EndBoundary = $expires.ToString('s')
+        $settings = New-ScheduledTaskSettingsSet -DeleteExpiredTaskAfter (New-TimeSpan -Seconds 1)
+        Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -User $acct -Password $plain -RunLevel Highest -Force -ErrorAction Stop | Out-Null
         $plain = $null
-        Say "Scheduled task 'AccessConnectorUpgrade' registered for $Schedule as $acct. Result will be in $logDir\result.json." 'OK'
-        Write-AuditEntry 'SUCCESS' 'schedule' "when=$Schedule"
+        Say ("Scheduled task '$taskName' registered for $Schedule as $acct. It deletes itself, and with it your stored Windows password, when the run ends, or at " + $expires.ToString('yyyy-MM-dd HH:mm') + " if it has not run by then. Result will be in $logDir\result.json, its output in $conLog.") 'OK'
+        Write-AuditEntry 'SUCCESS' 'schedule' ("when=$Schedule expires=" + $expires.ToString('yyyy-MM-dd HH:mm'))
         exit 0
     } catch { Write-ErrorEntry ("Could not register the scheduled task: " + $_.Exception.Message) 'schedule'; Write-AuditEntry 'FAILED' 'schedule'; exit 1 }
 }

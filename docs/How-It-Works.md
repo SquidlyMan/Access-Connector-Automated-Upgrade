@@ -17,11 +17,12 @@ The split exists because the connector side must work with what Windows Server a
 1. The fleet file is chosen and read. Tenants and connectors are filtered by `-Tenant` and `-Connector`.
 2. Every file the run needs is checked under the staging folder. A missing file stops the run before any connector is contacted.
 3. The plan is printed: fleet file, order, installer, and each connector.
-4. Unless `-DryRun` or `-Yes`, you type `YES` to continue.
-5. Passwords are asked once per tenant at hidden prompts.
-6. For each connector in turn: copy the payload, start the helper, relay its output, collect its result.
-7. After each connector the health gate decides whether the run goes on.
-8. A summary, a CSV and (SSH modes) the connector's logs are written to the central log folder.
+4. Over SSH (an upgrade or dry run, and the two repair modes), the tool signs in to every selected connector with a trivial Windows PowerShell command. If one fails, the run stops here with exit code 1, naming SSH's own reason for each, with a hint when the reason suggests one, before anything is asked or changed.
+5. Unless `-DryRun` or `-Yes`, you type `YES` to continue.
+6. Passwords are asked once per tenant at hidden prompts.
+7. For each connector in turn: copy the payload, start the helper, relay its output, collect its result.
+8. After each connector the health gate decides whether the run goes on.
+9. A summary, a CSV and (SSH modes) the connector's logs are written to the central log folder.
 
 ### The payload
 
@@ -75,6 +76,7 @@ After each connector:
 - Anything else on a real run: that tenant's remaining connectors are not started. By default nothing else is started either; `-ContinueOtherTenants` lets other tenants go on.
 - A failed dry run: the same passwords would fail on the tenant's other connectors, so they are not tried.
 - A domain admin account that could not start the task: the other connectors are not tried, so a wrong password is not repeated against Active Directory.
+- A sign-in that a connector refuses over WinRM (a wrong user name or password, say): that tenant's other connectors are not tried and, unless `-ContinueOtherTenants`, nothing else is started, in a dry run too. It is known before the next connector is started, so with `-Parallel` too the connectors not yet started are left alone. A connector WinRM cannot reach does not stop a dry run.
 
 ## Why Kerberos Auth connectors run under a scheduled task
 
