@@ -76,7 +76,7 @@ After each connector:
 - Anything else on a real run: that tenant's remaining connectors are not started. By default nothing else is started either; `-ContinueOtherTenants` lets other tenants go on.
 - A failed dry run: the same passwords would fail on the tenant's other connectors, so they are not tried.
 - A domain admin account that could not start the task: the other connectors are not tried, so a wrong password is not repeated against Active Directory.
-- A sign-in that a connector refuses over WinRM (a wrong user name or password, say): that tenant's other connectors are not tried and, unless `-ContinueOtherTenants`, nothing else is started, in a dry run too. It is known before the next connector is started, so with `-Parallel` too the connectors not yet started are left alone. A connector WinRM cannot reach does not stop a dry run.
+- A sign-in that a connector refuses over WinRM (a wrong user name or password, an account that is locked out, disabled or has an expired password, or, since 1.5.2, Negotiate's `0x8009030E`, `A specified logon session does not exist`, which it gives for an account that does not exist): that tenant's other connectors are not tried and, unless `-ContinueOtherTenants`, nothing else is started, in a dry run too. It is known before the next connector is started, so with `-Parallel` too the connectors not yet started are left alone. A connector WinRM cannot reach does not stop a dry run.
 
 ## Why Kerberos Auth connectors run under a scheduled task
 
@@ -90,6 +90,18 @@ A scheduled task with a stored password is a full sign-in. So for Kerberos Auth 
 4. the task deletes the secrets file as soon as it has read it, and deletes itself (and with it the stored account password) when the work ends, even if your connection drops.
 
 If the account name or password is wrong, the task fails to start and nothing is changed.
+
+### A job scheduled on the connector (`-Schedule`)
+
+After `-Mode Stage`, the helper's `-Prompt -Schedule "<time>"` registers a one-time task, `AccessConnectorUpgrade`, for a later time instead (Getting Started 14.8). Since 1.5.2 it works the same way at the console and in an SSH session signed in by key (`ssh -t`):
+
+1. after the passwords for the job are typed, it checks the time (not passed on the server's clock) and that no task of that name is running, before it asks for the account and before anything is written;
+2. it asks for the account the job runs as (or takes `-RunAsUser`) and refuses one the job cannot use: a built-in service account always, and for a job with Kerberos Auth any local account, since the keytab step needs a domain admin. The signed-in account is offered at Enter only when it would pass;
+3. it asks that account's Windows password (unless `-RunAsPassword` is given), then checks the time and the running task again;
+4. it encrypts the passwords for the job with machine-scope data protection, as the run-as task does, moves aside a `secrets.dat` left by an earlier `-Schedule` (whose task may still be pending), creates `secrets.dat` empty, limits it to Administrators and SYSTEM, and only then writes it;
+5. it registers the task under that account with highest privileges, replacing an earlier `AccessConnectorUpgrade` task that has not run yet, with a trigger that expires 12 hours after the start time and is then deleted by Task Scheduler. Only then is the earlier `secrets.dat` deleted.
+
+At the set time the job reads `secrets.dat`, deletes it, then decrypts the passwords, runs the upgrade with no standard input, and deletes the task (and with it the stored Windows password) when the run ends. A step that fails removes the `secrets.dat` it wrote, puts back the earlier one it moved aside (so an earlier task still pending runs as booked), and names the step. In 1.5.1 the task always ran as the signed-in account and the passwords were encrypted for that user, which a session signed in by key cannot do; a `secrets.dat` in that form is still read.
 
 ## How a certificate repair works
 
@@ -153,3 +165,9 @@ A connector that cannot be reached is listed on screen and still gets a row, wit
 The folder is readable by Administrators and SYSTEM only. Nothing in it is removed automatically.
 
 `-Mode Discover` writes nothing on a connector. (Windows still records the SSH sign-in, as it does any other.)
+
+## The set-up scripts in Prerequisites
+
+`Install-OpenSSHServer.ps1` works in this order: install, host keys, start sshd, keys, firewall, `sshd_config`, default shell, login alert, restart, host key fingerprint. Before the first step it loads the modules it uses with `-WhatIf` and `-Confirm` off for the load only (since 1.0.1), so that loading them prints nothing under `-WhatIf`. Since 1.0.1, on a first install with `-AllowFrom`, the install step itself limits the install's firewall rule `OpenSSH-Server-In-TCP` (or disables it, or stops the run) before sshd first starts; the firewall step later checks every OpenSSH rule as before.
+
+`Install-PowerShell7.ps1` takes the newest stable release from GitHub. When that release has no MSI for the processor, it asks the GitHub releases API for up to three pages of ten releases and picks the newest stable one that has an MSI. Since 1.0.1 it hands that choice a plain array: under Windows PowerShell 5.1, `@()` around the generic list of `ConvertFrom-Json` objects it collects throws `Argument types do not match`.

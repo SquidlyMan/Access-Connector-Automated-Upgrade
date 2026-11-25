@@ -26,6 +26,9 @@ param(
     [int]$MaxAttempts        = 4,
     [int]$RetryDelaySeconds  = 10,
     [int]$NetworkWaitSeconds = 30,
+    # For Install-PowerShell7.cmd, which reads it from its own arguments and passes it on: the
+    # launcher then does not wait for a key after a failure. The script never waits.
+    [switch]$NoPause,
     [switch]$Help,
 
     # Whatever is not one of the parameters above (a word, a cmd.exe-style /Switch, a misspelt
@@ -37,7 +40,7 @@ param(
 $ErrorActionPreference = 'Stop'
 # Windows PowerShell 5.1: drawing a progress bar slows web requests to a crawl.
 $ProgressPreference = 'SilentlyContinue'
-$script:Version   = '1.0.0'
+$script:Version   = '1.0.1'
 $script:Name      = 'Install-PowerShell7.ps1'
 $script:UiWidth   = 78
 $script:Started   = Get-Date
@@ -143,7 +146,7 @@ function Show-Help {
     Write-UiText 'Installs or updates PowerShell 7 on a Windows computer from Microsoft''s MSI package, and says at the end what it did and which version is installed. It is meant for the admin machine that runs Invoke-AccessConnectorUpgrade.ps1: the connectors themselves do not need PowerShell 7. It runs under the Windows PowerShell 5.1 that Windows already has.'
     Write-UiSection 'DESCRIPTION'
     Write-UiText 'Finds the newest stable PowerShell 7 release that has an MSI for this computer''s processor (x64, Arm64 or x86). It asks Microsoft''s stable-release link (aka.ms/powershell-release?tag=stable) first, which does not count against the GitHub API rate limit, and the GitHub releases API when that fails or when that release has no MSI. Releases published as MSIX only, previews and drafts are skipped.'
-    Write-UiText 'When the installed version is the same or newer, it changes nothing. Otherwise it downloads the MSI, checks its SHA-256 against the hashes.sha256 file Microsoft publishes with the release and checks that the package is signed by Microsoft, and refuses to install on any mismatch. It then installs silently, retrying while another installation holds Windows Installer, and checks pwsh.exe afterwards.'
+    Write-UiText 'When the installed version is the same or newer, it changes nothing. Otherwise it downloads the MSI, checks its SHA-256 against the hashes.sha256 file Microsoft publishes with the release and checks that the package is signed by Microsoft, and refuses to install on any mismatch. When the release was found through the GitHub releases API and its hashes.sha256 cannot be read or does not list the MSI, the SHA-256 is checked against the digest GitHub records for that file instead; with neither, nothing is downloaded or installed. It then installs silently, retrying while another installation holds Windows Installer, and checks pwsh.exe afterwards.'
     Write-UiText 'With -MsiSource it uses a package you copied beforehand, for a computer without Internet access or to save downloads: an MSI file, or a folder holding PowerShell-<version>-win-<arch>.msi (the highest version there is used). The package is copied to a local folder first; its signature is checked, and its SHA-256 too when the hashes.sha256 of the same release sits beside it. When no usable MSI is found there, the script downloads one instead.'
     Write-UiText 'Install settings: pwsh on the PATH, the event log manifest registered, "Open here" and "Run with PowerShell 7" in the Explorer menus, telemetry off, updates through Microsoft Update (unless -NoMicrosoftUpdate) and the PowerShell 7 remoting endpoints off (unless -EnablePSRemoting).'
     Write-UiSection 'PARAMETERS'
@@ -157,6 +160,7 @@ function Show-Help {
     Write-UiParam '-MaxAttempts <n>' 'Tries for each web request, and for msiexec while another installation is running (1618). 1 to 20. Default 4.'
     Write-UiParam '-RetryDelaySeconds <n>' 'Pause before the second try; it grows with each try, and is three times longer when GitHub limits the request rate (HTTP 403 or 429). 0 to 600. Default 10.'
     Write-UiParam '-NetworkWaitSeconds <n>' 'Before downloading, wait up to this long for github.com to resolve (useful in a startup script). 0 = do not wait. Not used behind a proxy. Default 30.'
+    Write-UiParam '-NoPause' 'For Install-PowerShell7.cmd: do not wait for a key after a failure or a restart code (see STARTING IT). The script itself never waits; it accepts the switch so that the launcher can pass it on.'
     Write-UiParam '-Help' 'Show this help.'
     Write-UiSection 'EXAMPLES'
     Write-UiCaption '# Install or update: double-click the launcher, or run it from cmd.exe'
@@ -182,7 +186,8 @@ function Show-Help {
     Write-UiSection 'STARTING IT'
     Write-UiText 'Install-PowerShell7.cmd starts this script in 64-bit Windows PowerShell with the execution policy bypassed for that one process; the computer''s own policy is not changed. An execution policy set by Group Policy still applies and wins over the bypass: then sign the script, or ask for the policy to change.'
     Write-UiText 'That is why the examples go through the launcher or -ExecutionPolicy Bypass. Started as .\Install-PowerShell7.ps1, the script runs only where the policy allows it: Windows 10 and 11 allow no script by default (Restricted), and RemoteSigned, the default on Windows Server, refuses a downloaded copy until Unblock-File (or Unblock in the file''s Properties) clears it.'
-    Write-UiText 'Double-clicked, the launcher asks Windows for elevation when needed and waits for a key at the end so that the result can be read. Started from cmd.exe or PowerShell with arguments (.\ in front works in both), it passes them to the script unchanged, and neither asks for elevation nor waits: to install that way, start it from an elevated window. /? shows this help. In a scheduled task, startup script or deployment tool, start the .ps1 directly as in the last example.'
+    Write-UiText 'Double-clicked, the launcher asks Windows for elevation when needed. Started from cmd.exe or PowerShell with arguments (.\ in front works in both), it passes them to the script unchanged and does not ask for elevation: to install that way, start it from an elevated window. /? shows this help.'
+    Write-UiText 'When the script does not succeed (an exit code other than 0, 3010 or 1641), or the launcher cannot start it, the launcher waits for a key before it ends, so that a window opened by double-click stays open until the error is read. After 0 it ends at once, and the run log holds the result. After 3010 or 1641 (installed, a restart is needed) it says to restart Windows, and waits for a key when it was started without arguments (double-clicked). It never waits when it runs as SYSTEM (a startup script or a task), or with -NoPause (the launcher also takes -NoPa and -NoPause:$true, by the first four characters). Either way it passes the exit code back. In a scheduled task, startup script or deployment tool, start the .ps1 directly as in the last example.'
     Write-UiText 'Not over SSH. Replacing PowerShell 7 over SSH can end the session and stop the install half-way, especially when the OpenSSH default shell is pwsh. So a run inside an SSH session (SSH_CONNECTION or SSH_CLIENT is set, or sshd is among its parent processes) installs and updates nothing: it stops with exit code 1 before it looks up a release, reads -MsiSource or downloads anything, also when PowerShell 7 is already current, and says so in the error log and the audit log. Run it at the console, by Remote Desktop, or through WinRM (Enter-PSSession or Invoke-Command) instead. -CheckOnly works over SSH.'
     Write-UiText 'Every parameter is named, with a dash. A word the script does not know (checkonly, or /CheckOnly as cmd.exe programs spell switches) stops the run before anything is done, and so does a quoted folder ending in a backslash that swallowed the rest of the command line; one at the very end is read as the folder it names.'
     Write-UiSection 'OUTPUT'
@@ -398,8 +403,12 @@ function Select-MsiRelease { param($Releases, [string]$Arch)
     # From GitHub API release objects: the highest stable version (no draft, no preview) that
     # has PowerShell-<version>-win-<arch>.msi. Some releases are published as MSIX only, so a
     # plain "latest release" lookup can land on one with no MSI; those are skipped here.
+    # No @() around $Releases: under Windows PowerShell 5.1, @() around a generic List of
+    # ConvertFrom-Json objects throws "Argument types do not match". foreach takes an array, a
+    # List or a single object as it is.
     $pick = $null; $newest = $null
-    foreach ($r in @($Releases)) {
+    if ($null -eq $Releases) { $Releases = @() }
+    foreach ($r in $Releases) {
         if (-not $r -or $r.draft -or $r.prerelease) { continue }
         if ([string]$r.tag_name -notmatch '^v(\d+\.\d+\.\d+)$') { continue }
         $v = [version]$Matches[1]
@@ -430,7 +439,8 @@ function Get-ReleaseFromApi { param([string]$Arch)
         foreach ($r in $list) { $all.Add($r) }
         if (@($list).Count -lt 10) { break }
     }
-    return (Select-MsiRelease -Releases $all -Arch $Arch) }
+    # A plain array, not the List itself (see Select-MsiRelease).
+    return (Select-MsiRelease -Releases $all.ToArray() -Arch $Arch) }
 function Resolve-Release { param([string]$Arch)
     # The release to install: version, MSI name and address, and the SHA-256 Microsoft published
     # for it (none when it could not be read). $null when no stable release has an MSI here.

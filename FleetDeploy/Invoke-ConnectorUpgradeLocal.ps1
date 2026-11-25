@@ -34,7 +34,7 @@ param(
     [switch]$Help
 )
 
-$script:Version  = '1.5.1'
+$script:Version  = '1.5.2'
 $script:UiWidth  = 78
 $script:Name     = 'Invoke-ConnectorUpgradeLocal.ps1'
 $script:Started  = Get-Date
@@ -109,6 +109,13 @@ function Read-UiSecret { param([string]$Prompt)
     try { return (Read-Host -AsSecureString) }
     finally { try { [Console]::ResetColor() } catch { } }
 }
+function Read-UiLine { param([string]$Prompt)
+    # A question that is not a secret, in the prompt colour. On anything but a colour console this
+    # is exactly the plain Read-Host call.
+    if (-not $script:ui.Reset -or $Host.Name -ne 'ConsoleHost') { return (Read-Host $Prompt) }
+    Write-Host ($script:ui.Prompt + $Prompt + ': ' + $script:ui.Reset) -NoNewline
+    return (Read-Host)
+}
 function Show-Disclaimer {
     Write-UiSection 'LEGAL DISCLAIMER - UNSUPPORTED, USE AT YOUR OWN RISK' -Legal
     Write-UiWarn 'This script is an UNSUPPORTED utility. It is NOT an Omnissa product or offering, and it is not covered by any Omnissa support, maintenance, or service-level agreement.'
@@ -126,17 +133,17 @@ function Show-Help {
     Write-UiSection 'DESCRIPTION'
     Write-UiText 'Reads a job file written by Invoke-AccessConnectorUpgrade.ps1, runs Install-AccessConnector.ps1 from the same folder against locally staged files, then runs the vendor Java4shellPatch.bat and confirms the connector services are running with -XX:-UseBASE64Intrinsics active.'
     Write-UiText 'The job file can also carry installer settings from the fleet file (install folder, FIPS mode, service ports, outbound proxy); they are passed to Install-AccessConnector.ps1 unchanged. A connector already installed with a different FIPS setting is refused: FIPS mode cannot be changed after install.'
-    Write-UiText 'Secrets arrive on standard input (SSH mode), as SecureString parameters (WinRM mode), from hidden prompts (-Prompt) or from a file encrypted for the current user (scheduled task).'
+    Write-UiText 'Secrets arrive on standard input (SSH mode), as SecureString parameters (WinRM mode), from hidden prompts (-Prompt) or from a secrets file for a scheduled task, encrypted for this server (machine-scope data protection), readable by Administrators and SYSTEM only and deleted when the task reads it.'
     Write-UiSection 'PARAMETERS'
     Write-UiParam '-JobFile <path>' 'Job JSON staged beside this script. Default: job.json in this script folder.'
     Write-UiParam '-Prompt' 'Ask for the passwords at hidden prompts. Use when run by hand.'
     Write-UiParam '-SecretsFromStdin' 'Read four base64 lines (config, PFX, service account, proxy; empty where not needed) from standard input. Used by SSH mode.'
-    Write-UiParam '-Schedule <when>' 'With -Prompt: register a one-time scheduled task for the given local time (yyyy-MM-dd HH:mm) under the signed-in account, instead of running now. The task deletes itself, and with it the stored Windows password, when the run ends, or 12 hours after that time if it has not run by then. Its output goes to Logs\task-console_<yyyyMMdd_HHmm>.log. Refused, with nothing written: a time that has passed, and a time given while an earlier scheduled run is still running. Not with -RunAsUser or -RunAsTask.'
-    Write-UiParam '-SecretsFile <path>' 'Secrets file written by -Schedule. Deleted after use.'
+    Write-UiParam '-Schedule <when>' 'With -Prompt: register a one-time scheduled task for the given local time (yyyy-MM-dd HH:mm) instead of running now. It asks for the account the job runs as (DOMAIN\user; Enter takes the signed-in account) and its Windows password, or takes -RunAsUser (and -RunAsPassword). The task runs under that account with highest privileges, so the account must be an administrator of this server. A job with the Kerberos Auth service needs a domain admin (its keytab step queries and changes Active Directory): a local account is refused, even with -SkipDomainCheck. Task Scheduler keeps that password until the task deletes itself: when the run ends, or 12 hours after that time if it has not run by then. The passwords for the job go to secrets.dat, encrypted for this server, so -Schedule works over SSH with key sign-in as well as at the console. Output: Logs\task-console_<yyyyMMdd_HHmm>.log. Refused, with nothing written: a time that has passed, a time given while an earlier scheduled run is still running, and an account the job cannot use. Not with -RunAsTask.'
+    Write-UiParam '-SecretsFile <path>' 'Secrets file written by -Schedule or -RunAsUser. Deleted when read.'
     Write-UiParam '-...Password <s>' 'Four SecureString parameters, -ConfigFilePassword, -SslCertPassword, -ServiceAccountPassword and -ProxyPassword, carry the passwords when another script calls this one (WinRM mode).'
     Write-UiParam '-VerifyOnly' 'Change nothing; report version, services and patch state.'
-    Write-UiParam '-SkipDomainCheck' 'Kerberos connectors only. Upgrade even when this sign-in cannot query Active Directory. The keytab is then left empty until setupKerberos.ps1 is run by a domain admin.'
-    Write-UiParam '-RunAsUser <acct>' 'Do the work in a one-time scheduled task under this account (a domain admin) and show its output here. Used by the SSH and WinRM modes for Kerberos connectors, because only a full sign-in can rebuild the keytab. With -RunAsPassword, or -RunAsTask to read both from standard input after the three secrets.'
+    Write-UiParam '-SkipDomainCheck' 'Kerberos connectors only. Upgrade even when this sign-in cannot query Active Directory. The keytab is then left empty until setupKerberos.ps1 is run by a domain admin. It does not relax the account rule of -Schedule: a job with the Kerberos Auth service is still scheduled under a domain account only.'
+    Write-UiParam '-RunAsUser <acct>' 'Do the work in a one-time scheduled task under this account (a domain admin) and show its output here. Used by the SSH and WinRM modes for Kerberos connectors, because only a full sign-in can rebuild the keytab. With -RunAsPassword, or -RunAsTask to read both from standard input after the four secrets. With -Schedule: the account the scheduled job runs as (its password is asked unless -RunAsPassword is given).'
     Write-UiParam '-RunAsPassword <s>' 'SecureString password for -RunAsUser. It is stored by Task Scheduler only while the task exists; the task removes itself when the work ends.'
     Write-UiParam '-RunAsTask' 'With -SecretsFromStdin: read the -RunAsUser account and its password as two more base64 lines, after the four secrets.'
     Write-UiParam '-CheckOnly' 'With -RepairKeytab: test the sign-in and change nothing. With -RepairCertificate: test the PFX and its password and change nothing.'
@@ -151,8 +158,12 @@ function Show-Help {
     Write-Host ($script:ui.Text + '  # Run now, signed in as a domain admin, typing the passwords' + $script:ui.Reset)
     Write-UiCmd 'powershell -ep Bypass -File .\Invoke-ConnectorUpgradeLocal.ps1 -Prompt'
     Write-Host ''
-    Write-Host ($script:ui.Text + '  # Schedule for tonight under the signed-in account' + $script:ui.Reset)
+    Write-Host ($script:ui.Text + '  # Schedule for tonight; asks for the account the job runs as' + $script:ui.Reset)
     Write-UiCmd '.\Invoke-ConnectorUpgradeLocal.ps1 -Prompt -Schedule "2026-11-21 22:30"'
+    Write-Host ''
+    Write-Host ($script:ui.Text + '  # The same, over ssh -t, under a domain admin (Kerberos Auth)' + $script:ui.Reset)
+    Write-UiCmd '.\Invoke-ConnectorUpgradeLocal.ps1 -Prompt -Schedule "2026-11-21 22:30" `'
+    Write-UiCmd '    -RunAsUser EXAMPLE\admin'
     Write-Host ''
     Write-Host ($script:ui.Text + '  # Report state only' + $script:ui.Reset)
     Write-UiCmd '.\Invoke-ConnectorUpgradeLocal.ps1 -VerifyOnly'
@@ -1036,6 +1047,24 @@ function Get-ScheduleProblem { param([datetime]$When, [string]$Text, [string]$Ta
     if ($old -and [string]$old.State -eq 'Running') { return "a task named $TaskName is running on this server now (an earlier scheduled run is still working); schedule again when it has ended" }
     return ''
 }
+function Get-ScheduleAccountProblem { param([string]$Account, [bool]$NeedsDomain, [string]$Computer)
+    # Why -Schedule must not register its task under $Account, or '' when it may. Task Scheduler
+    # needs an account with a password, so not a built-in service account. A job with the Kerberos
+    # Auth service needs a domain account, because its keytab step queries and changes Active
+    # Directory: an account with no domain part, '.\user', '<this computer>\user' and the
+    # built-in domains are local, and refused.
+    $a = ([string]$Account).Trim()
+    if (-not $a) { return 'no account was given for the scheduled job' }
+    if ($a -match '(?i)^((nt authority|builtin)\\)?(system|localsystem|local service|localservice|network service|networkservice)$') { return "$a is a built-in service account, which has no password for Task Scheduler to keep; give an administrator account of this server and its password" }
+    if (-not $NeedsDomain) { return '' }
+    $i = $a.IndexOf('\')
+    $dom = ''
+    if ($i -gt 0) { $dom = $a.Substring(0, $i) }
+    if ($i -lt 1 -or $dom -eq '.' -or $dom -ieq [string]$Computer -or $dom -match '(?i)^(nt authority|builtin)$') {
+        return "$a is not a domain account. This job includes the Kerberos Auth service, whose keytab step queries and changes Active Directory, so it must run as a domain admin: give the account as DOMAIN\user"
+    }
+    return ''
+}
 
 # ====================================================================== main
 Initialize-UiStyle
@@ -1077,7 +1106,7 @@ if ($VerifyOnly) {
     if ($modes.Count -gt 1) { Write-ErrorEntry 'Use only one of -SecretsFromStdin, -Prompt, -SecretsFile or the password parameters.' 'args'; Write-AuditEntry 'FAILED' 'args'; exit 1 }
     if ($modes.Count -eq 0) { Write-ErrorEntry 'No secret source given. Use -Prompt when running by hand (see -Help).' 'args'; Write-AuditEntry 'FAILED' 'args'; exit 1 }
     if ($Schedule -and -not $Prompt) { Write-ErrorEntry '-Schedule needs -Prompt (the passwords are collected now and stored for the task).' 'args'; Write-AuditEntry 'FAILED' 'args'; exit 1 }
-    if ($Schedule -and ($RunAsUser -or $RunAsTask)) { Write-ErrorEntry '-Schedule cannot be used with -RunAsUser or -RunAsTask: the run-as task starts the work now. Sign in as the account the job is to run under and use -Prompt -Schedule.' 'args'; Write-AuditEntry 'FAILED' 'args'; exit 1 }
+    if ($Schedule -and $RunAsTask) { Write-ErrorEntry '-Schedule cannot be used with -RunAsTask: -RunAsTask starts the work now. To schedule the job under another account, use -Prompt -Schedule, and give the account at its prompt or with -RunAsUser.' 'args'; Write-AuditEntry 'FAILED' 'args'; exit 1 }
 }
 
 $isAdmin = (New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -1150,12 +1179,14 @@ try {
         $sf = Get-Content -Raw -LiteralPath $SecretsFile | ConvertFrom-Json
         Remove-Item -LiteralPath $SecretsFile -Force -ErrorAction SilentlyContinue
         if ($sf.Scope -eq 'Machine') {
-            # written by -RunAsUser on this server for a task that runs under another account
+            # written on this server by -RunAsUser or -Schedule for a task, which may run under
+            # another account than the one that wrote it
             if ($sf.Cfg) { $ConfigFilePassword     = ConvertTo-SecureString (Unprotect-MachineText $sf.Cfg) -AsPlainText -Force }
             if ($sf.Pfx) { $SslCertPassword        = ConvertTo-SecureString (Unprotect-MachineText $sf.Pfx) -AsPlainText -Force }
             if ($sf.Svc) { $ServiceAccountPassword = ConvertTo-SecureString (Unprotect-MachineText $sf.Svc) -AsPlainText -Force }
             if ($sf.Proxy) { $ProxyPassword        = ConvertTo-SecureString (Unprotect-MachineText $sf.Proxy) -AsPlainText -Force }
         } else {
+            # user scope: a secrets.dat written by -Schedule before 1.5.2
             if ($sf.Cfg) { $ConfigFilePassword     = ConvertTo-SecureString $sf.Cfg }
             if ($sf.Pfx) { $SslCertPassword        = ConvertTo-SecureString $sf.Pfx }
             if ($sf.Svc) { $ServiceAccountPassword = ConvertTo-SecureString $sf.Svc }
@@ -1180,7 +1211,10 @@ if ($RepairCertificate) {
 # A remote sign-in (ssh key, WinRM) cannot query Active Directory, so the vendor Kerberos setup
 # cannot rebuild the keytab from it. A scheduled task with a stored password is a full sign-in.
 # This process starts the task, shows its output as it is written, and returns its result.
-if (($RunAsTask -or $RunAsUser) -and -not $RepairCertificate) {
+# With -Schedule (an upgrade, not a repair), -RunAsUser names the account of the scheduled job
+# instead, below.
+$scheduleRun = [bool]$Schedule -and -not ($RepairKeytab -or $RepairCertificate)
+if (($RunAsTask -or $RunAsUser) -and -not $RepairCertificate -and -not $scheduleRun) {
     $taskName = 'AccessConnectorUpgrade-RunAs'
     $sfPath = Join-Path $here ('secrets-runas_' + [guid]::NewGuid().ToString('N') + '.dat')
     $conLog = Join-Path $logDir ("task-console_{0}.log" -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
@@ -1329,23 +1363,69 @@ if ($RepairCertificate) { exit (Invoke-CertificateRepair -Here $here -LogDir $lo
 # ---- schedule instead of running now
 if ($Schedule) {
     $taskName = 'AccessConnectorUpgrade'
+    $sfPath = Join-Path $here 'secrets.dat'
+    # A secrets.dat already here belongs to an earlier -Schedule whose task may still be pending
+    # (Get-ScheduleProblem refuses only a running one). It is moved aside, not overwritten, and
+    # put back if this run fails, so that the earlier task can still read it; it is deleted only
+    # once the new task has replaced the earlier one.
+    $bakPath = $sfPath + '.previous'
+    $madeSecrets = $false; $movedOld = $false; $plain = $null; $acct = ''
+    # what is being done, for the error message: check, protect, write, register
+    $step = 'check'
     try {
         $when = [datetime]::ParseExact($Schedule, 'yyyy-MM-dd HH:mm', $null)
+        $expires = $when.AddHours(12)
         # Refused before anything is written: a time that has passed, or a task of this name that
         # is running now (Get-ScheduleProblem). Checked again after the password prompt below.
         $why = Get-ScheduleProblem -When $when -Text $Schedule -TaskName $taskName
         if ($why) { throw $why }
-        $acct = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-        $acctPw = Read-UiSecret "Windows password for $acct (stored by Task Scheduler to run the task)"
-        $plain = ConvertTo-PlainText $acctPw; Register-Secret $plain
+        # The account the job runs as: -RunAsUser, or asked (Enter takes the signed-in account).
+        # A job with the Kerberos Auth service needs a domain admin, since its keytab step queries
+        # and changes Active Directory; a local account is refused here, before anything is
+        # written. Over SSH the signed-in account is whichever account the key signs in as.
+        $needsDomain = ('KerberosAuthService' -in @($job.Services))
+        $signedIn = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $acct = ([string]$RunAsUser).Trim()
+        if (-not $acct) {
+            $offer = $signedIn
+            if (Get-ScheduleAccountProblem -Account $signedIn -NeedsDomain $needsDomain -Computer $env:COMPUTERNAME) { $offer = '' }
+            $q = 'Account the scheduled job runs as (DOMAIN\user)'
+            if ($offer) { $q += "; Enter for $offer" }
+            $typed = ([string](Read-UiLine $q)).Trim()
+            $acct = $typed
+            if (-not $acct) { $acct = $offer }
+        }
+        $why = Get-ScheduleAccountProblem -Account $acct -NeedsDomain $needsDomain -Computer $env:COMPUTERNAME
+        if ($why) { throw $why }
+        Say "The job will run as $acct. Task Scheduler keeps the Windows password of $acct until the task deletes itself: when the run ends, or at $($expires.ToString('yyyy-MM-dd HH:mm')) if it has not run by then."
+        if ($RunAsUser -and $RunAsPassword) { $acctPw = $RunAsPassword }
+        else { $acctPw = Read-UiSecret "Windows password for $acct (kept by Task Scheduler until the task deletes itself)" }
+        $plain = ConvertTo-PlainText $acctPw
+        if (-not $plain) { throw "no password was given for $acct" }
+        Register-Secret $plain
         $why = Get-ScheduleProblem -When $when -Text $Schedule -TaskName $taskName
         if ($why) { throw $why }
-        $sfPath = Join-Path $here 'secrets.dat'
-        $o = @{ Cfg = (ConvertFrom-SecureString $ConfigFilePassword) }
-        if ($SslCertPassword) { $o.Pfx = ConvertFrom-SecureString $SslCertPassword }
-        if ($ServiceAccountPassword) { $o.Svc = ConvertFrom-SecureString $ServiceAccountPassword }
-        if ($ProxyPassword) { $o.Proxy = ConvertFrom-SecureString $ProxyPassword }
-        Set-Content -LiteralPath $sfPath -Value ($o | ConvertTo-Json) -Encoding utf8
+        # The passwords for the job, with machine-scope protection (as the run-as task does): the
+        # job's account can read them back, and it works in an SSH session signed in by key, where
+        # user-scope protection (ConvertFrom-SecureString) is refused with 'Access is denied'.
+        $step = 'protect'
+        $o = @{ Scope = 'Machine'; Cfg = (Protect-MachineText (ConvertTo-PlainText $ConfigFilePassword)) }
+        if ($SslCertPassword)        { $o.Pfx = Protect-MachineText (ConvertTo-PlainText $SslCertPassword) }
+        if ($ServiceAccountPassword) { $o.Svc = Protect-MachineText (ConvertTo-PlainText $ServiceAccountPassword) }
+        if ($ProxyPassword)          { $o.Proxy = Protect-MachineText (ConvertTo-PlainText $ProxyPassword) }
+        # readable by Administrators and SYSTEM only, and deleted by the job as soon as it has read it
+        $step = 'write'
+        if (Test-Path -LiteralPath $sfPath) {
+            Move-Item -LiteralPath $sfPath -Destination $bakPath -Force -ErrorAction Stop
+            $movedOld = $true
+        }
+        Set-Content -LiteralPath $sfPath -Value '' -Encoding ascii -ErrorAction Stop
+        $madeSecrets = $true
+        $null = & icacls.exe $sfPath /inheritance:r /grant:r '*S-1-5-32-544:F' '*S-1-5-18:F' /Q 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "could not restrict access to it (icacls exit $LASTEXITCODE)" }
+        Set-Content -LiteralPath $sfPath -Value ($o | ConvertTo-Json) -Encoding ascii -ErrorAction Stop
+        $o = $null
+        $step = 'register'
         $conLog = Join-Path $logDir ("task-console_{0}.log" -f $when.ToString('yyyyMMdd_HHmm'))
         # As the run-as task does: the task deletes itself, and with it the stored Windows password,
         # as soon as the run ends. -NonInteractive and an empty standard input make anything that
@@ -1356,15 +1436,45 @@ if ($Schedule) {
         $trigger = New-ScheduledTaskTrigger -Once -At $when
         # And if it never runs (the server is off at that time, say), Task Scheduler deletes it
         # once the trigger has expired, 12 hours after the start time: far longer than a run takes.
-        $expires = $when.AddHours(12)
         $trigger.EndBoundary = $expires.ToString('s')
         $settings = New-ScheduledTaskSettingsSet -DeleteExpiredTaskAfter (New-TimeSpan -Seconds 1)
         Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -User $acct -Password $plain -RunLevel Highest -Force -ErrorAction Stop | Out-Null
         $plain = $null
-        Say ("Scheduled task '$taskName' registered for $Schedule as $acct. It deletes itself, and with it your stored Windows password, when the run ends, or at " + $expires.ToString('yyyy-MM-dd HH:mm') + " if it has not run by then. Result will be in $logDir\result.json, its output in $conLog.") 'OK'
-        Write-AuditEntry 'SUCCESS' 'schedule' ("when=$Schedule expires=" + $expires.ToString('yyyy-MM-dd HH:mm'))
+        # the earlier task, if any, is replaced now: its secrets are no longer needed
+        if ($movedOld) { Remove-Item -LiteralPath $bakPath -Force -ErrorAction SilentlyContinue }
+        Say ("Scheduled task '$taskName' registered for $Schedule as $acct. It deletes itself, and with it the stored Windows password, when the run ends, or at " + $expires.ToString('yyyy-MM-dd HH:mm') + " if it has not run by then. Result will be in $logDir\result.json, its output in $conLog.") 'OK'
+        Write-AuditEntry 'SUCCESS' 'schedule' ("when=$Schedule expires=" + $expires.ToString('yyyy-MM-dd HH:mm') + " account=$acct")
         exit 0
-    } catch { Write-ErrorEntry ("Could not register the scheduled task: " + $_.Exception.Message) 'schedule'; Write-AuditEntry 'FAILED' 'schedule'; exit 1 }
+    } catch {
+        $plain = $null; $o = $null
+        $reason = (([string]$_.Exception.Message) -replace '\s+', ' ').Trim()
+        # remove only what this run wrote
+        $left = ''
+        if ($madeSecrets) {
+            Remove-Item -LiteralPath $sfPath -Force -ErrorAction SilentlyContinue
+            if (Test-Path -LiteralPath $sfPath) { $left = " $sfPath could not be removed: delete it by hand." }
+        }
+        # put back the secrets.dat of an earlier -Schedule, whose task is still registered
+        $back = ''
+        if ($movedOld) {
+            if (-not (Test-Path -LiteralPath $sfPath)) { Move-Item -LiteralPath $bakPath -Destination $sfPath -Force -ErrorAction SilentlyContinue }
+            if (Test-Path -LiteralPath $bakPath) { $back = " The secrets.dat of an earlier -Schedule could not be put back from ${bakPath}: rename it to secrets.dat by hand, or a task $taskName registered before this run cannot read its passwords." }
+            else { $back = " The secrets.dat of an earlier -Schedule was put back, so a task $taskName registered before this run still runs as booked." }
+        }
+        $what = 'Not scheduled'
+        if ($step -eq 'protect') { $what = 'Could not protect the passwords for the scheduled task (machine-scope data protection)' }
+        elseif ($step -eq 'write') { $what = "Could not write the secrets file $sfPath" }
+        elseif ($step -eq 'register') { $what = 'Could not register the scheduled task' + $(if ($acct) { " as $acct" } else { '' }) }
+        $done = ' Nothing was written.'
+        if ($madeSecrets) { $done = ' secrets.dat was removed and no task was registered.' }
+        if ($left) { $done = ' No task was registered.' + $left }
+        if ($movedOld -and -not $madeSecrets) { $done = ' No task was registered.' }
+        if ($back) { $done += $back }
+        if ($reason -notmatch '[.!?]$') { $reason += '.' }
+        Write-ErrorEntry (Protect-Text ($what + ': ' + $reason + $done)) 'schedule'
+        Write-AuditEntry 'FAILED' 'schedule' ("step=$step")
+        exit 1
+    }
 }
 
 # ---- run
