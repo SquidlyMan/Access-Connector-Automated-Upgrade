@@ -124,7 +124,7 @@ Keys are only added. A key taken out of the GPO stays trusted on the computers t
 
 Run `Install-OpenSSHServer.ps1` by hand on one connector first, with the same settings: what only a computer can tell, such as a `-Source` folder that is not there, fails on that computer at every startup. Computers that take their updates from WSUS need Windows Update allowed for Features on Demand by policy, or a Features on Demand share the computer accounts can read, given as `-PayloadParameters @{ Source = '\\fileserver.example.local\FoD' }`.
 
-The script is new and has not yet run against a domain: it has been tested offline only, with fake Group Policy and Active Directory modules (Validation Record).
+Version 1.0.0 of the script has run against one domain in the lab, for one OU, with `-WhatIf` first; two of its servers, which already had OpenSSH Server, applied the GPO at their next restart (Validation Record). Not yet run: an update of an existing GPO, `-PayloadParameters`, and a computer that installs OpenSSH Server through it. Since 1.0.1 the payload, `Install-OpenSSHServer.ps1`, limits the install's firewall rule to `-AllowFrom` before sshd first starts (built, not yet run on a first install).
 
 ## 5. Take a safety net
 
@@ -158,13 +158,13 @@ Neither has been through a real run yet (see the Validation Record).
 Add `-Yes` to skip the confirmation. Passwords are still asked at prompts unless you pass credentials as objects (`-Credential`, `-RunAsCredential`); the configuration, PFX and service account passwords are always prompted in SSH and WinRM modes. A run started with no terminal (with its input redirected, or with `pwsh -NonInteractive`; start scheduled runs with `pwsh -NonInteractive`, because a scheduler that gives the run a console is not detected otherwise) cannot answer them: it stops at the first prompt with exit code 1, an error-log and an audit entry, before anything is copied to a connector. (An SSH run checks the SSH sign-in on every selected connector before its first prompt, and stops there, naming SSH's reason, if one fails. In 1.4.1 a run with its input redirected ended silently with exit code 0.) For a change window with nobody present, use Stage mode:
 
 1. `-Mode Stage -Tenant <name>` copies everything and writes `Run-Upgrade.cmd`.
-2. On each connector, signed in as a domain admin:
+2. On each connector, signed in at the console, by Remote Desktop, or over `ssh -t` (since 1.5.2):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File C:\ProgramData\AccessConnectorUpdate\Invoke-ConnectorUpgradeLocal.ps1 -Prompt -Schedule "2027-01-15 22:30"
 ```
 
-The passwords are typed now and stored encrypted for that account; the task runs at the time given. Stagger the times so two connectors of one tenant do not run together. Check each with `-Mode Verify` afterwards. The task deletes itself, and with it the account's Windows password that Task Scheduler keeps, when the run ends, or 12 hours after the time given if it has not run by then (1.5.1; not yet run on a connector). A time that has already passed on the connector's clock is refused, and so is a new time while an earlier scheduled run there is still running; nothing is written then.
+It asks for the account the job runs as (a domain admin for a connector with Kerberos Auth; Enter takes the signed-in account where it may) and that account's Windows password, or takes `-RunAsUser`. The passwords are typed now and stored in `secrets.dat`, encrypted for the server and readable by Administrators and SYSTEM only (since 1.5.2; built, not yet run on a connector); the task runs at the time given, under that account. Stagger the times so two connectors of one tenant do not run together. Check each with `-Mode Verify` afterwards. The task deletes itself, and with it the account's Windows password that Task Scheduler keeps, when the run ends, or 12 hours after the time given if it has not run by then (1.5.1; proven at the console on one connector, the expiry not yet run). A time that has already passed on the connector's clock is refused, and so is a new time while an earlier scheduled run there is still running; nothing is written then.
 
 ## 7. Clean installs and service changes
 

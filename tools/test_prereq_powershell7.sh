@@ -1,5 +1,5 @@
 #!/bin/bash
-# Offline tests of Prerequisites/Install-PowerShell7.ps1. Four parts, written into a temporary
+# Offline tests of Prerequisites/Install-PowerShell7.ps1. Five parts, written into a temporary
 # folder and run there in turn:
 #   1. its pure functions (hash file, release choice, pre-staged MSI, retry, wrapping), loaded
 #      from its syntax tree;
@@ -8,7 +8,9 @@
 #      process table (make_sim.py below); nothing in it contacts a host or changes the system;
 #   3. the command line (stray words, a quoted folder that ends in a backslash) and how a failed
 #      run ends (the installed version read again);
-#   4. the refusal inside an SSH session, and what still runs there (-CheckOnly).
+#   4. the refusal inside an SSH session, and what still runs there (-CheckOnly);
+#   5. the launcher Install-PowerShell7.cmd, as text (CRLF, ASCII, version, waits only on
+#      failure, or after a restart code when double-clicked).
 # Each case starts the simulation copy in a new pwsh. TMPDIR is a folder inside the temporary
 # folder, and SSH_CONNECTION and SSH_CLIENT are cleared, so a run of this suite over SSH sees
 # the same results. Needs pwsh, python3 and bash; contacts no host.
@@ -130,6 +132,41 @@ Check 'release: hashes.sha256 address from the same release' $r.Pick.HashUrl 'h7
 Check 'release: GitHub digest in capitals' $r.Pick.Digest ('0123456789abcdef' * 4).ToUpper()
 Check 'release: arm64' (Select-MsiRelease -Releases $list -Arch 'arm64').Pick.MsiName 'PowerShell-7.6.2-win-arm64.msi'
 Check 'release: x86 has none' ([string](Select-MsiRelease -Releases $list -Arch 'x86').Pick) ''
+# Issue 13: Get-ReleaseFromApi collects the pages in a List[object]; under Windows PowerShell 5.1
+# @() around that List threw "Argument types do not match". PowerShell 7 does not throw, so the
+# List is passed here as it is, and the source is checked for the pattern below.
+$gl = New-Object System.Collections.Generic.List[object]
+foreach ($o in $list) { $gl.Add($o) }
+$r = Select-MsiRelease -Releases $gl -Arch 'x64'
+Check 'release: List[object] of ConvertFrom-Json objects, pick' $r.Pick.Tag 'v7.6.2'
+Check 'release: List[object] of ConvertFrom-Json objects, newest stable' $r.NewestStable '7.7.0'
+Check 'release: plain array from List.ToArray()' (Select-MsiRelease -Releases $gl.ToArray() -Arch 'x64').Pick.Tag 'v7.6.2'
+$r = Select-MsiRelease -Releases (New-Object System.Collections.Generic.List[object]) -Arch 'x64'
+Check 'release: empty List[object] gives no pick' ([string]$r.Pick) ''
+Check 'release: empty List[object] gives no newest' ([string]$r.NewestStable) ''
+$r = Select-MsiRelease -Releases $null -Arch 'x64'
+Check 'release: $null gives no pick' ([string]$r.Pick) ''
+Check 'release: one release object (not a list)' (Select-MsiRelease -Releases @($list)[4] -Arch 'x64').Pick.Tag 'v7.6.2'
+# Get-ReleaseFromApi over three pages, with a stand-in for Get-WebText (no network): two full
+# pages of MSIX-only releases and previews, then the page above. All pages are read.
+$fill1 = @(1..10 | ForEach-Object { '{"tag_name":"v7.7.' + $_ + '","draft":false,"prerelease":false,"assets":[{"name":"PowerShell-7.7.' + $_ + '-win-x64.msix","browser_download_url":"m"}]}' }) -join ','
+$fill2 = @(1..10 | ForEach-Object { '{"tag_name":"v7.8.0-preview.' + $_ + '","draft":false,"prerelease":true,"assets":[{"name":"PowerShell-7.8.0-preview.' + $_ + '-win-x64.msi","browser_download_url":"p"}]}' }) -join ','
+$script:Pages = @{ 1 = "[$fill1]"; 2 = "[$fill2]"; 3 = $json }
+$script:PagesAsked = 0
+function Get-WebText { param([string]$Url, [string]$Description, [string]$Accept)
+    $script:PagesAsked++
+    if ($Url -notmatch '[?&]page=(\d+)') { throw "unexpected address $Url" }
+    $script:Pages[[int]$Matches[1]] }
+$r = Get-ReleaseFromApi -Arch 'x64'
+Check 'api: three pages read' $script:PagesAsked '3'
+Check 'api: pick across pages (List handed on as an array)' $r.Pick.Tag 'v7.6.2'
+Check 'api: newest stable across pages' $r.NewestStable '7.7.10'
+$script:Pages = @{ 1 = '[]' }; $script:PagesAsked = 0
+$r = Get-ReleaseFromApi -Arch 'x64'
+Check 'api: empty first page gives no pick' ([string]$r.Pick) ''
+$srcText = [IO.File]::ReadAllText($Script)
+Check 'source: no @() around the releases List' ([bool]($srcText -match '@\(\$Releases\)')) 'False'
+Check 'source: Get-ReleaseFromApi passes $all.ToArray()' ([bool]($srcText -match 'Select-MsiRelease -Releases \$all\.ToArray\(\)')) 'True'
 
 # ---- Find-StagedMsi (empty placeholder files in a temporary folder)
 $d = Join-Path ([IO.Path]::GetTempPath()) ('ps7test-' + [guid]::NewGuid().ToString('N'))
@@ -216,6 +253,7 @@ run 'signature bad: refused'                   1    'Refusing to install PowerSh
 run 'lookup fails: offline hint'               1    'The release lookup failed: The remote name could not be resolved' SIM_LOOKUP=throw
 run 'no release found'                         1    'No stable PowerShell 7 release with an MSI for win-x64 was found' SIM_LOOKUP=none
 run 'success code but pwsh missing: error'     1    'msiexec reported success, but'                 SIM_RC=0
+run 'check only + -NoPause (for the launcher)' 0   'Update available: PowerShell 7.4.6 -> 7.5.4'   SIM_ADMIN=0 SIM_BEFORE=7.4.6 -- -CheckOnly -NoPause
 run 'remoting and MU switches reach msiexec'   0    'ENABLE_PSREMOTING=1 USE_MU=0 ENABLE_MU=0'      SIM_AFTER=7.5.4 -- -EnablePSRemoting -NoMicrosoftUpdate
 [ "$fail" = 0 ]
 PS7_MAIN_FLOW
@@ -414,11 +452,59 @@ if [ "$w" -le 78 ] && printf '%s' "$HF" | grep -qF 'Not over SSH. Replacing Powe
 [ "$fail" = 0 ]
 PS7_SSH
 
+# ---------------------------------------------------------------------- cmd_cases.sh
+cat > "$T/cmd_cases.sh" <<'PS7_LAUNCHER'
+#!/bin/bash
+# Text checks of the launcher, Install-PowerShell7.cmd (there is no cmd.exe here): ASCII and CRLF
+# throughout, its version, and that it waits for a key only after a failure (issue 13): the
+# success code 0 and NOPAUSE (-NoPause, or SYSTEM) end before the one pause; 3010 and 1641
+# say to restart and wait only in a window started without arguments; and the exit code is
+# passed back on every path.
+set -u
+CMD="$1"; PS1="$2"
+pass=0; fail=0
+ok()  { pass=$((pass+1)); echo "PASS $1"; }
+bad() { fail=$((fail+1)); echo "FAIL $1"; }
+chk() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
+[ -f "$CMD" ] || { echo "FAIL launcher: $CMD not found"; exit 1; }
+TXT=$(tr -d '\r' < "$CMD")
+lines=$(wc -l < "$CMD" | tr -d ' '); crlf=$(grep -c $'\r$' "$CMD")
+chk 'launcher: CRLF on every line' '[ "$lines" = "$crlf" ] && [ "$lines" -gt 0 ]'
+chk 'launcher: ASCII only' '! LC_ALL=C grep -q "[^[:print:][:space:]]" "$CMD"'
+v=$(sed -n "s/^\$script:Version *= *'\([0-9.]*\)'.*/\1/p" "$PS1" | head -1)
+chk 'launcher: version line matches the script ($script:Version)' 'printf "%s\n" "$TXT" | grep -qE "^REM  Install-PowerShell7.cmd - version $v,"'
+chk 'launcher and script: version 1.0.1' '[ "$v" = "1.0.1" ]'
+# The code lines only (no REM, no blank lines), so that comments cannot satisfy a check.
+CODE=$(printf '%s\n' "$TXT" | grep -viE '^[[:space:]]*(rem( |$)|$)')
+np=$(printf '%s\n' "$CODE" | grep -ciE '^[[:space:]]*pause[[:space:]]*$')
+chk 'launcher: exactly one pause' '[ "$np" = 1 ]'
+chk 'launcher: no pause tied to a double-click any more' '! printf "%s\n" "$CODE" | grep -qiE "defined INTERACTIVE|set .INTERACTIVE="'
+DONE=$(printf '%s\n' "$CODE" | sed -n '/^:done/,/^exit \/b %RC%$/p')
+before=$(printf '%s\n' "$DONE" | sed '/^pause/,$d')
+chk 'launcher: 0 ends before the pause'    'printf "%s\n" "$before" | grep -qxF "if \"%RC%\"==\"0\" exit /b %RC%"'
+RST=$(printf '%s\n' "$before" | sed -n '/^:restart$/,$p')
+chk 'launcher: 3010 says to restart, and waits only when started without arguments' 'printf "%s\n" "$before" | grep -qxF "if \"%RC%\"==\"3010\" goto :restart" && printf "%s\n" "$RST" | grep -q "^echo \[WARN\] PowerShell 7 is installed. Restart Windows" && printf "%s\n" "$RST" | grep -qxF "if defined NOPAUSE exit /b %RC%" && printf "%s\n" "$RST" | grep -qxF "if defined HASARGS if not defined ELEVATEDRUN exit /b %RC%"'
+chk 'launcher: 1641 goes the way of 3010' 'printf "%s\n" "$before" | grep -qxF "if \"%RC%\"==\"1641\" goto :restart"'
+chk 'launcher: NOPAUSE ends before the pause' 'printf "%s\n" "$before" | grep -qxF "if defined NOPAUSE exit /b %RC%"'
+chk 'launcher: the pause is in the :done block' 'printf "%s\n" "$DONE" | grep -qx "pause"'
+chk 'launcher: the exit code is passed back after the pause' '[ "$(printf "%s\n" "$DONE" | tail -1)" = "exit /b %RC%" ]'
+chk 'launcher: -NoPause found among the arguments, by its first four characters (-NoPa, -NoPause:$true)' 'printf "%s\n" "$CODE" | grep -qxF "set \"ARG=%~1\"" && printf "%s\n" "$CODE" | grep -qxF "if /i \"%ARG:~0,4%\"==\"-NoP\" set \"NOPAUSE=1\"" && [ "$(grep -cE "^[[:space:]]*\[[a-z]+\]\\\$NoP" "$PS1")" = 1 ]'
+chk 'launcher: argument scan keeps its own path (shift /1)' 'printf "%s\n" "$CODE" | grep -qx "shift /1" && ! printf "%s\n" "$CODE" | grep -qix "shift"'
+chk 'launcher: SYSTEM never waits' 'printf "%s\n" "$CODE" | grep -qxF "if /i \"%USERNAME%\"==\"%COMPUTERNAME%\$\" set \"NOPAUSE=1\""'
+chk 'launcher: no CALL to a label with the arguments (CALL answers /? itself)' '! printf "%s\n" "$CODE" | grep -qiE "^call :"'
+chk 'launcher: arguments still reach the script whole' 'printf "%s\n" "$CODE" | grep -qF -- "-File \"%PS1%\" %*"'
+chk 'launcher: an empty first argument counts as an argument' 'printf "%s\n" "$CODE" | grep -qxF "if not [%1]==[] set \"HASARGS=1\""'
+chk 'script: accepts -NoPause' 'grep -qF "[switch]\$NoPause," "$PS1"'
+echo "launcher: $pass passed, $fail failed"
+[ "$fail" = 0 ]
+PS7_LAUNCHER
+
 # ------------------------------------------------------------------------ run the parts in turn
 rc=0
 pwsh -NoLogo -NoProfile -File "$T/test-functions.ps1" "$SRC" 2>&1 || rc=1
 bash "$T/run_sim.sh" "$SRC" 2>&1 || rc=1
 bash "$T/fix_cases.sh" 2>&1 || rc=1
 bash "$T/ssh_cases.sh" 2>&1 || rc=1
+bash "$T/cmd_cases.sh" "$REPO/Prerequisites/Install-PowerShell7.cmd" "$SRC" 2>&1 || rc=1
 if [ "$rc" = 0 ]; then echo "ALL TESTS PASSED"; else echo "TESTS FAILED"; fi
 exit "$rc"

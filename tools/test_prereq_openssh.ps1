@@ -62,13 +62,14 @@ function Get-NetFirewallPortFilter { [CmdletBinding()] param([switch]$All, $Poli
   foreach ($r in @($global:FW.Values | Where-Object { $_.Active })) { [pscustomobject]@{ InstanceID = $r.Name; Protocol = $r.Protocol; LocalPort = $r.Port } } }
 function Enable-NetFirewallRule { [CmdletBinding(SupportsShouldProcess = $true)] param($Name) if ($global:FailEnable) { throw 'Access is denied.' }; $global:FW[$Name].Enabled = 'True'; if (-not $global:GpoIgnoresLocal) { $global:FW[$Name].Active = $true }; $global:FwLog.Add("ENABLED $Name") }
 function Set-NetFirewallRule { [CmdletBinding(SupportsShouldProcess = $true)] param($Name, $RemoteAddress) if ($global:FailSet) { throw 'The parameter is incorrect.' }; $global:FW[$Name].RA = @($RemoteAddress); $global:FwLog.Add("SCOPED $Name " + ($RemoteAddress -join ',')) }
+function Disable-NetFirewallRule { [CmdletBinding(SupportsShouldProcess = $true)] param($Name) if ($global:FailDisable) { throw 'Access is denied.' }; $global:FW[$Name].Enabled = 'False'; $global:FW[$Name].Active = $false; $global:FwLog.Add("DISABLED $Name") }
 function New-NetFirewallRule { [CmdletBinding(SupportsShouldProcess = $true)] param($Name, $DisplayName, $Enabled, $Direction, $Protocol, $LocalPort, $Action, $Profile, $RemoteAddress)
   $ra = @('Any'); if ($RemoteAddress) { $ra = @($RemoteAddress) }
   $global:FW[$Name] = [pscustomobject]@{ Name = $Name; DisplayName = $DisplayName; Enabled = $Enabled; Direction = 'Inbound'; Action = 'Allow'; RA = $ra; Protocol = 'TCP'; Port = '22'; Program = 'Any'; Service = 'Any'; Package = ''; Active = $true }
   $global:FwLog.Add("CREATED $Name from " + ($ra -join ',')) }
 function New-FwRule { param($Name, $Enabled = 'True', $RA = @('Any'), $Protocol = 'TCP', $Port = '22', $Program = 'Any', $Service = 'Any', $Package = '', $Active = $true, $Direction = 'Inbound', $Action = 'Allow')
   [pscustomobject]@{ Name = $Name; DisplayName = "Rule $Name"; Enabled = $Enabled; Direction = $Direction; Action = $Action; RA = @($RA); Protocol = $Protocol; Port = $Port; Program = $Program; Service = $Service; Package = $Package; Active = $Active } }
-function Reset-Run { $script:Problems.Clear(); $script:Warnings.Clear(); $global:FwLog = New-Object System.Collections.Generic.List[string]; $global:Decline = $null; $global:FailSet = $false; $global:FailEnable = $false; $global:PortFilterThrows = $false; $script:IsWhatIf = $false; $script:Pending = $false; $script:R.Firewall = '' }
+function Reset-Run { $script:Problems.Clear(); $script:Warnings.Clear(); $global:FwLog = New-Object System.Collections.Generic.List[string]; $global:Decline = $null; $global:FailSet = $false; $global:FailEnable = $false; $global:FailDisable = $false; $global:PortFilterThrows = $false; $script:IsWhatIf = $false; $script:Pending = $false; $script:R.Firewall = '' }
 $env:NO_COLOR = '1'; Initialize-UiStyle
 $global:Pass = 0; $global:Fail = 0
 function Check { param([string]$Name, [bool]$Ok, [string]$Detail = '') if ($Ok) { $global:Pass++; "PASS $Name" } else { $global:Fail++; "FAIL ${Name}: $Detail" } }
@@ -330,6 +331,101 @@ $global:FailReg = $false
 Reset-Run; $script:Shell = 'PowerShell7'; $global:RegShell = $null
 Set-SshDefaultShell *> $null
 Check 'PowerShell7: note kept once' (@($script:Warnings | Where-Object { $_ -eq $script:Pwsh7Note }).Count -eq 1)
+
+# ---- #8 first install: the install's any-address rule is limited before sshd first starts
+$script:Cap = [pscustomobject]@{ Name = 'OpenSSH.Server~~~~0.0.1.0' }
+$Source = $null; $LimitAccess = $false
+function Add-WindowsCapability { param([switch]$Online, $Name, $Source, [switch]$LimitAccess)
+    $global:FW['OpenSSH-Server-In-TCP'] = (New-FwRule 'OpenSSH-Server-In-TCP'); $global:FwLog.Add('INSTALLED'); [pscustomobject]@{ RestartNeeded = $false } }
+function Get-Service { param($Name, $ErrorAction) [pscustomobject]@{ Name = 'sshd'; Status = 'Stopped' } }
+$savedFind = ${function:Find-OpenSshTool}
+function Find-OpenSshTool { param($Exe) return ('C:\Windows\System32\OpenSSH\' + $Exe) }
+$savedStop = ${function:Stop-Run}
+function Stop-Run { param($Message, $Stage) Add-Problem $Message $Stage; throw 'STOPPED' }
+function Run-Install { param([string[]]$Allow)
+    Reset-Run; $script:Svc = $null; $global:FW = @{}
+    $script:Specs = @(); if ($Allow) { $script:Specs = @($Allow | ForEach-Object { ConvertTo-NetSpec $_ }) }
+    $global:Stopped = $false
+    try { Install-SshServer *> $null } catch { if ("$_" -eq 'STOPPED') { $global:Stopped = $true } else { throw } } }
+Run-Install @('10.0.0.0/24')
+Check 'install + -AllowFrom: rule limited inside the install step' (($global:FwLog -join '; ') -eq 'INSTALLED; SCOPED OpenSSH-Server-In-TCP 10.0.0.0/24' -and $global:FW['OpenSSH-Server-In-TCP'].Enabled -eq 'True' -and $script:Problems.Count -eq 0 -and $script:R.OpenSSH -eq 'installed now') (($global:FwLog -join '; ') + ' | ' + ($script:Problems -join '|'))
+Set-SshFirewallScope *> $null
+Check 'install + -AllowFrom: firewall step then finds it limited, changes nothing' (($global:FwLog -join '; ') -eq 'INSTALLED; SCOPED OpenSSH-Server-In-TCP 10.0.0.0/24' -and $script:R.Firewall -eq 'TCP 22 from 10.0.0.0/24 (OpenSSH-Server-In-TCP)' -and $script:Problems.Count -eq 0) (($global:FwLog -join '; ') + ' | ' + $script:R.Firewall)
+Reset-Run; $script:Svc = $null; $global:FW = @{}; $script:Specs = @(ConvertTo-NetSpec '10.0.0.0/24'); $global:FailSet = $true
+try { Install-SshServer *> $null } catch { }
+Check 'install + -AllowFrom, limit fails: rule disabled before sshd starts, no problem yet' (($global:FwLog -join '; ') -eq 'INSTALLED; DISABLED OpenSSH-Server-In-TCP' -and $global:FW['OpenSSH-Server-In-TCP'].Enabled -eq 'False' -and $script:Problems.Count -eq 0) (($global:FwLog -join '; ') + ' | ' + ($script:Problems -join '|'))
+Set-SshFirewallScope *> $null
+Check 'install + -AllowFrom, limit fails again at the firewall step: stays disabled, one problem' ($global:FW['OpenSSH-Server-In-TCP'].Enabled -eq 'False' -and $script:Problems.Count -eq 1 -and $script:Problems[0] -match 'It is disabled, and stays so') ($script:Problems -join '|')
+$global:FailSet = $false; $script:Problems.Clear(); $global:FwLog.Clear()
+Set-SshFirewallScope *> $null
+Check 'install + -AllowFrom, disabled rule: firewall step limits, then enables it' (($global:FwLog -join '; ') -eq 'SCOPED OpenSSH-Server-In-TCP 10.0.0.0/24; ENABLED OpenSSH-Server-In-TCP' -and $script:Problems.Count -eq 0) (($global:FwLog -join '; ') + ' | ' + ($script:Problems -join '|'))
+Reset-Run; $script:Svc = $null; $global:FW = @{}; $script:Specs = @(ConvertTo-NetSpec '10.0.0.0/24'); $global:FailSet = $true; $global:FailDisable = $true; $global:Stopped = $false
+try { Install-SshServer *> $null } catch { if ("$_" -eq 'STOPPED') { $global:Stopped = $true } }
+Check 'install + -AllowFrom, neither limit nor disable: run stops before sshd starts' ($global:Stopped -and $script:Problems.Count -eq 1 -and $script:Problems[0] -match 'neither limited to 10.0.0.0/24' -and $script:Problems[0] -match 'sshd was not started') ($script:Problems -join '|')
+Run-Install @()
+Check 'install, no -AllowFrom: rule left as the install made it, warned' (($global:FwLog -join '; ') -eq 'INSTALLED' -and $global:FW['OpenSSH-Server-In-TCP'].Enabled -eq 'True' -and $script:Problems.Count -eq 0 -and @($script:Warnings | Where-Object { $_ -match '^No -AllowFrom: rule OpenSSH-Server-In-TCP, which the install added, lets TCP 22 in from any address' }).Count -eq 1) (($global:FwLog -join '; ') + ' | ' + ($script:Warnings -join '|'))
+$global:Decline = 'Let TCP 22 in only from*'; $script:Svc = $null; $global:FW = @{}; $script:Specs = @(ConvertTo-NetSpec '10.0.0.0/24'); $script:Warnings.Clear(); $global:FwLog.Clear()
+try { Install-SshServer *> $null } catch { }
+Check 'install + -AllowFrom, limit declined (-Confirm): rule untouched, warned' (($global:FwLog -join '; ') -eq 'INSTALLED' -and @($script:Warnings | Where-Object { $_ -match 'was not limited before sshd first starts' }).Count -eq 1) (($global:FwLog -join '; ') + ' | ' + ($script:Warnings -join '|'))
+Reset-Run; $script:Svc = $null; $global:FW = @{}; $script:Specs = @(ConvertTo-NetSpec '10.0.0.0/24'); $script:IsWhatIf = $true
+Install-SshServer *> $null
+$out = ((Set-SshFirewallScope 6>&1 | Out-String) -replace '\s+', ' ')
+Check 'install -WhatIf: nothing installed or changed, said when the limit comes' ($global:FwLog.Count -eq 0 -and $script:Pending -and $script:R.OpenSSH -eq 'would be installed' -and $out -match 'right after the install, before sshd first starts') $out
+Reset-Run; $script:Svc = [pscustomobject]@{ Name = 'sshd' }; $script:SshdExe = $null; $script:Specs = @(ConvertTo-NetSpec '10.0.0.0/24')
+$global:FW = @{ 'OpenSSH-Server-In-TCP' = (New-FwRule 'OpenSSH-Server-In-TCP') }
+Install-SshServer *> $null
+Check 'already installed: install step leaves the firewall to its own step' ($global:FwLog.Count -eq 0 -and $script:R.OpenSSH -like 'already installed*') ($global:FwLog -join '; ')
+$script:SshdExe = 'C:\Windows\System32\OpenSSH\sshd.exe'
+Set-Item -Path function:Find-OpenSshTool -Value $savedFind; Set-Item -Path function:Stop-Run -Value $savedStop
+Remove-Item function:Get-Service, function:Add-WindowsCapability
+# the order of the steps in the main block: install (which limits the rule), then sshd is started
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($Script, [ref]$null, [ref]$null)
+$mainAt = $text.IndexOf('# ====================================================================== main')
+$calls = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | Where-Object { $_.Extent.StartOffset -gt $mainAt })
+function First-Call { param([string]$Name) $c = @($calls | Where-Object { $_.GetCommandName() -eq $Name } | Sort-Object { $_.Extent.StartOffset }); if ($c.Count) { return $c[0].Extent.StartOffset }; return -1 }
+$iInst = First-Call 'Install-SshServer'; $iStart = First-Call 'Start-SshService'; $iFw = First-Call 'Set-SshFirewallScope'
+Check 'main: install step before sshd is started, firewall step after it' ($iInst -gt 0 -and $iStart -gt $iInst -and $iFw -gt $iStart) "install=$iInst start=$iStart firewall=$iFw"
+$fnInstall = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Install-SshServer' }, $true))[0]
+$inner = @($fnInstall.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() })
+Check 'Install-SshServer calls Limit-InstallRule and never starts sshd' (($inner -contains 'Limit-InstallRule') -and -not ($inner -contains 'Start-Service') -and -not ($inner -contains 'Start-SshdOnce')) ($inner -join ',')
+
+# ---- #7 -WhatIf: loading a module prints no "Set Alias" lines; real changes still honour -WhatIf
+$modDir = Join-Path $work 'AliasMod'; $null = [System.IO.Directory]::CreateDirectory($modDir)   # New-Item is a stand-in above
+Set-Content -LiteralPath (Join-Path $modDir 'AliasMod.psm1') -Value "function Get-AcuThing { 'x' }`nSet-Alias -Name gacu -Value Get-AcuThing`nExport-ModuleMember -Function Get-AcuThing -Alias gacu"
+$fnImport = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Import-UsedModules' }, $true))
+$probe = Join-Path $work 'whatif-probe.txt'; $savedModulePath = $env:PSModulePath
+$runner = Join-Path $work 'whatif-runner.ps1'
+function Run-WhatIfProbe { param([bool]$UseFunction, [string]$How)
+    # the stand-in module is found by name, as Windows PowerShell finds CimCmdlets
+    $q = "'AliasMod'"
+    $body = "[CmdletBinding(SupportsShouldProcess = `$true)] param()`n"
+    $body += ($fnImport[0].Extent.Text) + "`n"
+    $body += "`$script:UsedModules = @($q)`n"
+    if ($UseFunction) { $body += "Import-UsedModules`n" } else { $body += "Import-Module $q`n" }
+    $body += "'alias=' + [bool](Get-Command gacu -ErrorAction SilentlyContinue)`n"
+    $body += "'pref=' + `$WhatIfPreference + ' global=' + `$global:WhatIfPreference`n"
+    $body += "New-Item -ItemType File -Path '" + ($probe -replace "'", "''") + "' | Out-Null`n"
+    Set-Content -LiteralPath $runner -Value $body
+    $env:PSModulePath = $work + [System.IO.Path]::PathSeparator + $savedModulePath
+    if ($How -eq 'file') { return (& pwsh -NoLogo -NoProfile -File $runner -WhatIf 2>&1 | Out-String) }
+    $cmd = "& ([scriptblock]::Create((Get-Content -Raw -LiteralPath '" + ($runner -replace "'", "''") + "'))) -WhatIf"
+    return (& pwsh -NoLogo -NoProfile -Command $cmd 2>&1 | Out-String) }
+Check 'Import-UsedModules is in the script and loads CimCmdlets, NetSecurity, Dism and ServerManager' ($fnImport.Count -eq 1 -and (@($script:UsedModules) -contains 'CimCmdlets') -and (@($script:UsedModules) -contains 'NetSecurity') -and (@($script:UsedModules) -contains 'Dism') -and (@($script:UsedModules) -contains 'ServerManager'))
+$o = Run-WhatIfProbe $false 'file'
+Check 'stand-in module: a plain load under -WhatIf prints Set Alias (the fault)' ($o -match 'What if: .*"Set Alias"') $o
+foreach ($how in 'file', 'scriptblock') {
+    $o = Run-WhatIfProbe $true $how
+    Check "Import-UsedModules under -WhatIf ($how): no Set Alias line, module loaded" (($o -notmatch 'Set Alias') -and ($o -match 'alias=True')) $o
+    Check "Import-UsedModules under -WhatIf ($how): -WhatIf still in force after it" (($o -match 'pref=True') -and ($o -match 'What if: .*"Create File"') -and -not (Test-Path -LiteralPath $probe)) $o }
+$env:PSModulePath = $savedModulePath
+$iImport = First-Call 'Import-UsedModules'
+$cim = @($calls | Where-Object { $_.GetCommandName() -like '*-Cim*' -or $_.GetCommandName() -like '*-WindowsCapability' -or $_.GetCommandName() -like '*-NetFirewall*' } | Sort-Object { $_.Extent.StartOffset })
+$firstCim = -1; if ($cim.Count) { $firstCim = $cim[0].Extent.StartOffset }
+$iWork = First-Call 'Install-SshServer'
+Check 'main: modules loaded before the first CIM, capability or firewall command and before the steps' ($iImport -gt 0 -and $firstCim -gt $iImport -and $iWork -gt $iImport) "import=$iImport firstCim=$firstCim install=$iWork"
+$wi = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -and $n.VariablePath.UserPath -match '^(global:)?(WhatIfPreference|ConfirmPreference)$' }, $true) | Where-Object { $_.Parent -is [System.Management.Automation.Language.AssignmentStatementAst] -and $_.Parent.Left -eq $_ })
+$outside = @($wi | Where-Object { $_.Extent.StartOffset -lt $fnImport[0].Extent.StartOffset -or $_.Extent.EndOffset -gt $fnImport[0].Extent.EndOffset })
+Check '-WhatIf and -Confirm preferences are set nowhere but in Import-UsedModules' ($wi.Count -gt 0 -and $outside.Count -eq 0) (($outside | ForEach-Object { $_.Extent.Text + '@' + $_.Extent.StartLineNumber }) -join ', ')
 
 try { Remove-Item -LiteralPath $work -Recurse -Force } catch { "note: could not remove $work" }
 if ($global:Fail) { 'TESTS FAILED'; exit 1 }

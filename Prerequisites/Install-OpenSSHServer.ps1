@@ -36,7 +36,7 @@ param(
 # were taken out; everything specific to a server is a parameter or is read from the server.
 
 $ErrorActionPreference = 'Stop'
-$script:Version   = '1.0.0'
+$script:Version   = '1.0.1'
 $script:UiWidth   = 78
 $script:Name      = 'Install-OpenSSHServer.ps1'
 $script:Started   = Get-Date
@@ -73,6 +73,10 @@ $script:PrivateKeyText = 'PRIVATE KEY|PuTTY-User-Key-File|Private-Lines:'   # te
 $script:AlertSource = 'SSHLoginAlert'
 $script:AlertTask   = 'SSH-Login-Alert'
 $script:AlertKey    = 'HKLM:\SOFTWARE\SSHLoginAlert'
+# The modules whose commands this script runs, loaded at the start by Import-UsedModules.
+# ServerManager (Get-WindowsFeature, for the banner's server roles) sets aliases too; it is
+# not there on client Windows, and is then skipped.
+$script:UsedModules = @('CimCmdlets', 'Microsoft.PowerShell.Security', 'NetSecurity', 'NetTCPIP', 'ScheduledTasks', 'Dism', 'ServerManager')
 $script:Pwsh7Note = 'With PowerShell 7 as the default shell, an upgrade of PowerShell 7 started from an SSH session stops pwsh.exe, which ends the session and the upgrade with it. Upgrade PowerShell 7 from the console, over WinRM, or from an SSH session that starts Windows PowerShell (ssh <server> powershell). The Access Connector tool needs no default shell change: it starts Windows PowerShell by name.'
 $script:R = [ordered]@{
     Computer = $env:COMPUTERNAME; Result = ''; OpenSSH = ''; Service = ''; HostKeys = ''
@@ -212,7 +216,7 @@ function Show-Help {
     Write-UiText 'Installs OpenSSH Server on a Windows server and makes it ready for key sign-in, the way the Access Connector tool signs in. sshd starts with Windows, your public keys are authorised for administrators, TCP 22 is limited to the networks you name, password sign-in is turned off once a valid key is in place, and the host key fingerprint is shown for you to check on your first connection.'
     Write-UiText 'Safe to run again: each step changes only what is not already right. Run it on the server, or on many servers at once from a Windows admin machine with Invoke-Command (see EXAMPLES).'
     Write-UiSection 'WHAT IT DOES, IN ORDER'
-    Write-UiItem '1.' 'Installs the OpenSSH.Server Windows capability when there is no sshd service, from Windows Update or WSUS, or from -Source. This can take several minutes, and on Windows 10 and 11 often much longer.'
+    Write-UiItem '1.' 'Installs the OpenSSH.Server Windows capability when there is no sshd service, from Windows Update or WSUS, or from -Source. This can take several minutes, and on Windows 10 and 11 often much longer. The install adds rule OpenSSH-Server-In-TCP, which lets TCP 22 in from any address. With -AllowFrom that rule is limited to those networks at once, before sshd first starts; if it cannot be limited it is disabled until step 5, and if it cannot be disabled either the run stops before sshd starts. Without -AllowFrom it stays open to any address, and the run warns.'
     Write-UiItem '2.' 'Checks the host keys. A key made by hand (ssh-keygen -A in an admin''s window) can carry an access entry for that admin which icacls /inheritance:r does not remove; sshd then refuses it and stops with "no hostkeys available". Such keys are reset to SYSTEM and Administrators only.'
     Write-UiItem '3.' 'Sets the sshd service to start automatically and starts it. If it does not start and there are no host keys, they are made with ssh-keygen -A and the start is tried again.'
     Write-UiItem '4.' 'Adds each key from -PublicKey and -PublicKeyFile that sshd does not yet read from C:\ProgramData\ssh\administrators_authorized_keys, the file OpenSSH reads for members of the local Administrators group, then limits that file to Administrators and SYSTEM: OpenSSH ignores it otherwise. A key counts as there only on a line sshd uses: not a # comment, and with nothing in front of it but options sshd accepts. A file saved as UTF-16 or with a byte-order mark, which sshd cannot read, is saved again as plain text; until it is, the keys sshd cannot read do not count.'
@@ -370,6 +374,23 @@ function Stop-Run { param([string]$Message, [string]$Stage)
 function Confirm-Change { param([string]$Target, [string]$Action)
     # -WhatIf answers no and prints what would happen; -Confirm asks.
     return $script:Cmdlet.ShouldProcess($Target, $Action) }
+function Import-UsedModules {
+    # Windows PowerShell loads a module the first time one of its commands runs. Under -WhatIf
+    # that load asks ShouldProcess for each alias the module sets, so the first Get-CimInstance
+    # printed twelve "What if: ... Set Alias" lines (CimCmdlets) before the first step, and
+    # under -Confirm it would ask about each. Loading a module changes nothing on the server, so
+    # the modules are loaded here with -WhatIf and -Confirm off for the load only: here, and in
+    # the global scope, which a module's own code reads, put back at once. Every real change
+    # later still goes through Confirm-Change. A module that is not there is skipped; the step
+    # that needs it says so.
+    $WhatIfPreference = $false
+    $ConfirmPreference = 'None'
+    $gw = $global:WhatIfPreference; $gc = $global:ConfirmPreference
+    $global:WhatIfPreference = $false; $global:ConfirmPreference = 'None'
+    try {
+        foreach ($m in @($script:UsedModules)) {
+            try { if (-not (Get-Module -Name $m -ErrorAction Stop)) { Import-Module -Name $m -ErrorAction Stop } } catch { } }
+    } finally { $global:WhatIfPreference = $gw; $global:ConfirmPreference = $gc } }
 
 # ---------------------------------------------------------------- files, programs, permissions
 function Invoke-Native { param([string]$FilePath, [string[]]$Arguments)
@@ -1079,7 +1100,37 @@ function Install-SshServer {
     $script:SshdExe = Find-OpenSshTool 'sshd.exe'
     $script:KeygenExe = Find-OpenSshTool 'ssh-keygen.exe'
     $script:R.OpenSSH = 'installed now'
-    Say 'OpenSSH Server installed.' 'OK' }
+    Say 'OpenSSH Server installed.' 'OK'
+    Limit-InstallRule }
+function Limit-InstallRule {
+    # The install adds rule OpenSSH-Server-In-TCP, enabled, TCP 22 from any address, and sshd first
+    # starts with the Windows default sshd_config, where password sign-in is on until the
+    # sshd_config step. With -AllowFrom, each enabled OpenSSH-Server-In-TCP rule is limited now,
+    # before sshd first starts, so TCP 22 is not open to every address in between. A rule that
+    # cannot be limited is disabled until the firewall step (which limits a rule before it
+    # enables it); one that can be neither limited nor disabled stops the run before sshd starts.
+    # Without -AllowFrom the rule stays as the install made it, and the run says so.
+    $rules = @(Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP*' -ErrorAction SilentlyContinue | Where-Object { "$($_.Enabled)" -eq 'True' })
+    $want = @(@($script:Specs) | ForEach-Object { $_.Text })
+    if (-not $want.Count) {
+        if ($rules.Count) { Add-Warning ('No -AllowFrom: rule ' + ((@($rules) | ForEach-Object { $_.Name }) -join ', ') + ', which the install added, lets TCP 22 in from any address, and stays so. Until the sshd_config step turns it off, password sign-in is on as well. Give -AllowFrom to limit TCP 22 before sshd first starts.') }
+        return }
+    $wantKey = Get-AddressKey $want
+    $wantText = $want -join ', '
+    if (-not $rules.Count) { Say ('The install added no enabled OpenSSH-Server-In-TCP rule; the firewall step below adds or enables one, limited to ' + $wantText + '.'); return }
+    foreach ($r in $rules) {
+        $cur = @(($r | Get-NetFirewallAddressFilter).RemoteAddress)
+        if ((Get-AddressKey $cur) -eq $wantKey) { Say ($r.Name + ': already TCP 22 from ' + $wantText + ' only.') 'OK'; continue }
+        if (-not (Confirm-Change ('firewall rule ' + $r.Name) ('Let TCP 22 in only from ' + $wantText + ', before sshd first starts'))) {
+            Add-Warning ('Rule ' + $r.Name + ' was not limited before sshd first starts: until the firewall step, TCP 22 is open from ' + (Format-Scope $cur) + '.'); continue }
+        $why = ''
+        try { Set-NetFirewallRule -Name $r.Name -RemoteAddress $want -Confirm:$false; Say ($r.Name + ': TCP 22 now only from ' + $wantText + ', before sshd first starts (the install made it ' + (Format-Scope $cur) + ').') 'OK'; continue }
+        catch { $why = $_.Exception.Message }
+        try {
+            Disable-NetFirewallRule -Name $r.Name -Confirm:$false
+            Say ('Rule ' + $r.Name + ' could not be limited to ' + $wantText + ' (' + $why + '), so it is disabled until the firewall step below, which tries again.') 'WARN' }
+        catch {
+            Stop-Run ('Rule ' + $r.Name + ', which the install added, lets TCP 22 in from ' + (Format-Scope $cur) + ' and could be neither limited to ' + $wantText + ' (' + $why + ') nor disabled (' + $_.Exception.Message + '). sshd was not started. Limit or disable the rule, then run the script again.') 'install' } } }
 function Get-HostKeyFiles {
     if (-not $script:SshDir -or -not (Test-Path -LiteralPath $script:SshDir)) { return }
     return @(Get-ChildItem -LiteralPath $script:SshDir -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^ssh_host_[a-z0-9]+_key$' }) }
@@ -1229,8 +1280,8 @@ function Set-SshFirewallScope {
     $wantKey = Get-AddressKey $want
     $wantText = $want -join ', '
     if ($script:Pending) {
-        if ($want.Count) { Say ('The install adds rule OpenSSH-Server-In-TCP (TCP 22 from any address); it would then be limited to ' + $wantText + '.'); $script:R.Firewall = 'would be TCP 22 from ' + $wantText }
-        else { Say 'The install adds rule OpenSSH-Server-In-TCP: TCP 22 from any address.'; $script:R.Firewall = 'TCP 22 from any address (rule made by the install)' }
+        if ($want.Count) { Say ('The install adds rule OpenSSH-Server-In-TCP (TCP 22 from any address); it would be limited to ' + $wantText + ' right after the install, before sshd first starts.'); $script:R.Firewall = 'would be TCP 22 from ' + $wantText }
+        else { Say 'The install adds rule OpenSSH-Server-In-TCP: TCP 22 from any address, left so without -AllowFrom.'; $script:R.Firewall = 'TCP 22 from any address (rule made by the install)' }
         return }
     $p0 = $script:Problems.Count
     $failed = @{}; $declined = $false
@@ -1484,7 +1535,8 @@ function Register-LoginAlert {
         # A real event trigger bound to the OpenSSH Operational log
         $subscription = '<QueryList><Query Id="0" Path="OpenSSH/Operational"><Select Path="OpenSSH/Operational">*[System[(EventID=4)]]</Select></Query></QueryList>'
         $triggerClass = Get-CimClass -ClassName MSFT_TaskEventTrigger -Namespace 'Root/Microsoft/Windows/TaskScheduler'
-        $trigger = New-CimInstance -CimClass $triggerClass -ClientOnly
+        # an object in memory only, which changes nothing: the task registration below is the change
+        $trigger = New-CimInstance -CimClass $triggerClass -ClientOnly -WhatIf:$false -Confirm:$false
         $trigger.Subscription = $subscription
         $trigger.Enabled = $true
         $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
@@ -1608,6 +1660,8 @@ if ($script:OnWindows -and $env:ProgramData) {
     $script:BannerFile = Join-Path $script:SshDir 'banner.txt'
     $script:Pwsh7Path  = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
     try { $script:IsAdmin = (New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch { }
+    # before any command that loads a module, so -WhatIf prints no "Set Alias" lines
+    Import-UsedModules
 }
 
 # ---- logs: a path given is checked now; the default folder is made only when it is written to

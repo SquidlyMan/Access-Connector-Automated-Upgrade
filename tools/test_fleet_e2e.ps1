@@ -25,7 +25,7 @@ function Assert-Equal { param($Actual, $Expected, [string]$What)
 $orch = Join-Path $repo 'FleetDeploy/Invoke-AccessConnectorUpgrade.ps1'
 $helper = Join-Path $repo 'FleetDeploy/Invoke-ConnectorUpgradeLocal.ps1'
 $unitFns = @('Get-SshHint','Add-SshHint','Get-SshStepError','ConvertFrom-RemoteErrorText','Test-WinRMSignInRefused','Get-WinRMSignInReason','Get-VerifyVerdict','Test-CertBad','Format-Cert','Protect-Text','Register-Secret','Test-SshSignInCheckNeeded','Start-ConnectorRun')
-$helperFns = @('Get-TaskCommand','Get-SelfDeletingTaskArgument','Get-ScheduleProblem')   # from the helper (pwsh parses it)
+$helperFns = @('Get-TaskCommand','Get-SelfDeletingTaskArgument','Get-ScheduleProblem','Get-ScheduleAccountProblem')   # from the helper (pwsh parses it)
 $tk = $null; $pe = $null; $he = $null
 $oast = [System.Management.Automation.Language.Parser]::ParseFile($orch, [ref]$tk, [ref]$pe)
 $hast = [System.Management.Automation.Language.Parser]::ParseFile($helper, [ref]$tk, [ref]$he)
@@ -42,7 +42,7 @@ $helperText = [IO.File]::ReadAllText($helper)
 Invoke-TestCase 'hint: each ssh reason gets its hint, with the user and host; any other reason none' {
     $h = 'connector1.example.local'
     $want = [ordered]@{
-        'administrator@connector1.example.local: Permission denied (publickey).' = 'the key was not accepted: name it with -SshKey <file>, or add an IdentityFile line for these hosts to the SSH settings file (Getting Started 4.7); test by hand with ssh ops@connector1.example.local hostname.'
+        'administrator@connector1.example.local: Permission denied (publickey).' = 'the connector refused the sign-in for ops: the account does not exist there, or its key was not accepted; SSH does not say which. Check the account name (SshUser in the fleet file, or -SshUser) and that its key is authorised on the connector (Getting Started 4.4); name the key with -SshKey <file>, or with an IdentityFile line for these hosts in the SSH settings file (Getting Started 4.7). An ''Invalid user'' line in the connector''s OpenSSH/Operational event log means the account does not exist. Test by hand: ssh ops@connector1.example.local hostname'
         'Host key verification failed.' = "the connector's host key changed: remove the old one with ssh-keygen -R connector1.example.local and check the new one (Getting Started 4.6)."
         '@@@@@@@@@@@ / @    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @ / @@@@@@@@@@@' = "the connector's host key changed: remove the old one with ssh-keygen -R connector1.example.local and check the new one (Getting Started 4.6)."
         'ssh: Could not resolve hostname connector1.example.local: nodename nor servname provided, or not known' = 'the name does not resolve from this machine.'
@@ -56,21 +56,44 @@ Invoke-TestCase 'hint: each ssh reason gets its hint, with the user and host; an
         '' = ''
     }
     foreach ($r in $want.Keys) { Assert-Equal (Get-SshHint -Reason $r -User 'ops' -HostName $h) $want[$r] "hint for '$r'" }
-    Assert-Equal (Get-SshHint -Reason 'Permission denied (publickey).' -User '' -HostName $h) 'the key was not accepted: name it with -SshKey <file>, or add an IdentityFile line for these hosts to the SSH settings file (Getting Started 4.7); test by hand with ssh administrator@connector1.example.local hostname.' 'no user: administrator'
+    Assert-Equal (Get-SshHint -Reason 'Permission denied (publickey).' -User '' -HostName $h) 'the connector refused the sign-in for administrator: the account does not exist there, or its key was not accepted; SSH does not say which. Check the account name (SshUser in the fleet file, or -SshUser) and that its key is authorised on the connector (Getting Started 4.4); name the key with -SshKey <file>, or with an IdentityFile line for these hosts in the SSH settings file (Getting Started 4.7). An ''Invalid user'' line in the connector''s OpenSSH/Operational event log means the account does not exist. Test by hand: ssh administrator@connector1.example.local hostname' 'no user: administrator'
 }
 Invoke-TestCase 'hint: with -SshKey the key is named and the test command uses it' {
-    Assert-Equal (Get-SshHint -Reason 'Permission denied (publickey).' -User 'ops' -HostName 'connector1.example.local' -KeyFile '~/.ssh/connector_ed25519') 'the key ~/.ssh/connector_ed25519 was not accepted: check that its public key is authorised on the connector (Getting Started 4.4); test by hand with ssh -i ~/.ssh/connector_ed25519 ops@connector1.example.local hostname.' 'Permission denied'
-    Assert-True ((Get-SshHint -Reason 'Permission denied' -User 'ops' -HostName 'c1' -KeyFile '/keys/my key') -match "ssh -i '/keys/my key' ops@c1 hostname") 'a key path with a space is not quoted'
+    Assert-Equal (Get-SshHint -Reason 'Permission denied (publickey).' -User 'ops' -HostName 'connector1.example.local' -KeyFile '~/.ssh/connector_ed25519') 'the connector refused the sign-in for ops: the account does not exist there, or its key was not accepted; SSH does not say which. Check the account name (SshUser in the fleet file, or -SshUser) and that the public key of ~/.ssh/connector_ed25519 is authorised for it on the connector (Getting Started 4.4). An ''Invalid user'' line in the connector''s OpenSSH/Operational event log means the account does not exist. Test by hand: ssh -i ~/.ssh/connector_ed25519 ops@connector1.example.local hostname' 'Permission denied'
+    Assert-True ((Get-SshHint -Reason 'Permission denied' -User 'ops' -HostName 'c1' -KeyFile '/keys/my key') -match "ssh -i '/keys/my key' ops@c1 hostname$") 'a key path with a space is not quoted'
     Assert-Equal (Get-SshHint -Reason 'Too many authentication failures' -HostName 'c1' -KeyFile 'k') 'too many keys were offered before the one named with -SshKey: set IdentitiesOnly yes for these hosts in the SSH settings file (Getting Started 4.7).' 'Too many'
 }
 Invoke-TestCase 'hint: a domain account in the test command is quoted, so that zsh and bash keep its backslash' {
-    Assert-Equal (Get-SshHint -Reason 'Permission denied (publickey).' -User 'EXAMPLE\admin' -HostName 'connector1.example.local') "the key was not accepted: name it with -SshKey <file>, or add an IdentityFile line for these hosts to the SSH settings file (Getting Started 4.7); test by hand with ssh 'EXAMPLE\admin@connector1.example.local' hostname." 'without -SshKey'
-    Assert-Equal (Get-SshHint -Reason 'Permission denied (publickey).' -User 'EXAMPLE\admin' -HostName 'connector1.example.local' -KeyFile '~/.ssh/connector_ed25519') "the key ~/.ssh/connector_ed25519 was not accepted: check that its public key is authorised on the connector (Getting Started 4.4); test by hand with ssh -i ~/.ssh/connector_ed25519 'EXAMPLE\admin@connector1.example.local' hostname." 'with -SshKey'
+    Assert-Equal (Get-SshHint -Reason 'Permission denied (publickey).' -User 'EXAMPLE\admin' -HostName 'connector1.example.local') 'the connector refused the sign-in for EXAMPLE\admin: the account does not exist there, or its key was not accepted; SSH does not say which. Check the account name (SshUser in the fleet file, or -SshUser) and that its key is authorised on the connector (Getting Started 4.4); name the key with -SshKey <file>, or with an IdentityFile line for these hosts in the SSH settings file (Getting Started 4.7). An ''Invalid user'' line in the connector''s OpenSSH/Operational event log means the account does not exist. Test by hand: ssh ''EXAMPLE\admin@connector1.example.local'' hostname' 'without -SshKey'
+    Assert-Equal (Get-SshHint -Reason 'Permission denied (publickey).' -User 'EXAMPLE\admin' -HostName 'connector1.example.local' -KeyFile '~/.ssh/connector_ed25519') 'the connector refused the sign-in for EXAMPLE\admin: the account does not exist there, or its key was not accepted; SSH does not say which. Check the account name (SshUser in the fleet file, or -SshUser) and that the public key of ~/.ssh/connector_ed25519 is authorised for it on the connector (Getting Started 4.4). An ''Invalid user'' line in the connector''s OpenSSH/Operational event log means the account does not exist. Test by hand: ssh -i ~/.ssh/connector_ed25519 ''EXAMPLE\admin@connector1.example.local'' hostname' 'with -SshKey'
+}
+Invoke-TestCase 'hint (#5, #6): Permission denied names both the account and the key, says how to tell which, and ends with the test command, nothing after it' {
+    $cases = @(
+        @{ User = 'nosuchuser'; Key = ''; Cmd = 'ssh nosuchuser@connector1.example.local hostname' },
+        @{ User = 'nosuchuser'; Key = '~/.ssh/connector_ed25519'; Cmd = 'ssh -i ~/.ssh/connector_ed25519 nosuchuser@connector1.example.local hostname' },
+        @{ User = 'EXAMPLE\svc-access'; Key = ''; Cmd = "ssh 'EXAMPLE\svc-access@connector1.example.local' hostname" },
+        @{ User = 'ops'; Key = '/keys/my key'; Cmd = "ssh -i '/keys/my key' ops@connector1.example.local hostname" })
+    foreach ($c in $cases) {
+        $hint = Get-SshHint -Reason 'nosuchuser@connector1.example.local: Permission denied (publickey,keyboard-interactive).' -User $c.User -HostName 'connector1.example.local' -KeyFile $c.Key
+        Assert-True ($hint.EndsWith('Test by hand: ' + $c.Cmd)) "the hint does not end with the test command ($($c.User), key '$($c.Key)'): $hint"
+        Assert-True ($hint -notmatch 'the key was not accepted:') "the hint still puts it on the key alone: $hint"
+        Assert-True ($hint.Contains("the connector refused the sign-in for $($c.User): the account does not exist there, or its key was not accepted; SSH does not say which.")) "both causes not named: $hint"
+        Assert-True ($hint.Contains('Check the account name (SshUser in the fleet file, or -SshUser)')) "the account name is not to be checked: $hint"
+        Assert-True ($hint.Contains("An 'Invalid user' line in the connector's OpenSSH/Operational event log means the account does not exist.")) "how to tell which is not said: $hint"
+        # as the run shows it: Add-SshHint adds nothing after the hint
+        $m = Add-SshHint 'cannot reach connector1.example.local over SSH: Permission denied (publickey).' $hint
+        Assert-True ($m.EndsWith(' hostname')) "the message does not end with the command: $m"
+    }
+    # no other hint ends with a command followed by a full stop
+    foreach ($r in 'Host key verification failed.', 'Too many authentication failures', 'Could not resolve hostname x', 'Connection refused') {
+        foreach ($k in '', 'k') { $x = Get-SshHint -Reason $r -User 'ops' -HostName 'connector1.example.local' -KeyFile $k
+            Assert-True ($x -notmatch '(hostname|-R connector1\.example\.local)\.$') "a command followed by a full stop: $x" }
+    }
 }
 Invoke-TestCase 'first SSH step message: ssh not reached (with the hint), or signed in and the script failed; masked' {
     $c = [pscustomobject]@{ Host = 'connector1.example.local'; SshUser = 'administrator' }
     $m = Get-SshStepError -Conn $c -Result ([pscustomobject]@{ ExitCode = 255; Lines = @(); Errors = @('administrator@connector1.example.local: Permission denied (publickey).'); TimedOut = $false }) -What 'create C:\ProgramData\AccessConnectorUpdate'
-    Assert-Equal $m 'cannot reach connector1.example.local over SSH: administrator@connector1.example.local: Permission denied (publickey). Hint: the key was not accepted: name it with -SshKey <file>, or add an IdentityFile line for these hosts to the SSH settings file (Getting Started 4.7); test by hand with ssh administrator@connector1.example.local hostname.' 'Permission denied'
+    Assert-Equal $m 'cannot reach connector1.example.local over SSH: administrator@connector1.example.local: Permission denied (publickey). Hint: the connector refused the sign-in for administrator: the account does not exist there, or its key was not accepted; SSH does not say which. Check the account name (SshUser in the fleet file, or -SshUser) and that its key is authorised on the connector (Getting Started 4.4); name the key with -SshKey <file>, or with an IdentityFile line for these hosts in the SSH settings file (Getting Started 4.7). An ''Invalid user'' line in the connector''s OpenSSH/Operational event log means the account does not exist. Test by hand: ssh administrator@connector1.example.local hostname' 'Permission denied'
     $m = Get-SshStepError -Conn $c -Result ([pscustomobject]@{ ExitCode = 255; Lines = @(); Errors = @('ssh: connect to host connector1.example.local port 22: Connection refused'); TimedOut = $false }) -What 'create X'
     Assert-Equal $m 'cannot reach connector1.example.local over SSH: ssh: connect to host connector1.example.local port 22: Connection refused. Hint: port 22 is not reachable from this machine (firewall, or OpenSSH Server not running).' 'Connection refused'
     $m = Get-SshStepError -Conn $c -Result ([pscustomobject]@{ ExitCode = 255; Lines = @(); Errors = @(); TimedOut = $false }) -What 'create X'
@@ -141,6 +164,31 @@ Invoke-TestCase 'WinRM sign-in classification: refused sign-ins are true, connec
     foreach ($k in $no.Keys) { Assert-True (-not (Test-WinRMSignInRefused $no[$k])) "taken as refused: $k" }
     Assert-Equal (Get-WinRMSignInReason (& $rec (& $tx $denied 5) 'AccessDenied,PSSessionOpenFailed')) 'Access is denied.' 'reason without the boilerplate'
     Assert-Equal (Get-WinRMSignInReason "[connector1.example.local] $denied") 'Access is denied.' 'reason with the host prefix'
+}
+Invoke-TestCase 'WinRM sign-in classification (#14): 0x8009030E, "A specified logon session does not exist", is a refused sign-in as a string, an exception and an ErrorRecord' {
+    $tx = { param([string]$Message, [int]$Code) $e = [System.Management.Automation.Remoting.PSRemotingTransportException]::new($Message); $e.ErrorCode = $Code; $e }
+    $rec = { param($Ex, [string]$Fqid) [System.Management.Automation.ErrorRecord]::new($Ex, $Fqid, [System.Management.Automation.ErrorCategory]::OpenError, $null) }
+    # the message seen from a Windows admin machine with an account that does not exist
+    $seen = 'Connecting to remote server connector1.example.local failed with the following error message : WinRM cannot process the request. The following error with error code 0x8009030e occurred while using Negotiate authentication: A specified logon session does not exist. It may already have been terminated. This can occur if the provided credentials are not valid on the target server, or if the server identity could not be verified. If you trust the server identity, add the server name to the TrustedHosts list, and then try the request again. For more information, see the about_Remote_Troubleshooting Help topic.'
+    $yes = [ordered]@{
+        'the message as a string'                     = $seen
+        'the message in a transport exception'        = (& $tx $seen 0)
+        'the message in an ErrorRecord'               = (& $rec (& $tx $seen 0) 'PSSessionOpenFailed')
+        'ErrorCode -2146893042, other words'          = (& $rec (& $tx 'Connecting to remote server failed.' -2146893042) 'x,PSSessionOpenFailed')
+        'HRESULT 0x8009030E on an inner exception'    = [Exception]::new('outer', [System.Runtime.InteropServices.COMException]::new('failed', -2146893042))
+        'only the words'                              = 'A specified logon session does not exist.'
+        'only the code, upper case'                   = 'The following error with errorcode 0x8009030E occurred while using Negotiate authentication.'
+        'in ErrorDetails'                             = $(& { $r = & $rec ([Exception]::new('failed')) 'x,PSSessionOpenFailed'; $r.ErrorDetails = [System.Management.Automation.ErrorDetails]::new($seen); $r })
+    }
+    foreach ($k in $yes.Keys) { Assert-True (Test-WinRMSignInRefused $yes[$k]) "not taken as refused: $k" }
+    $no = [ordered]@{
+        'name not resolved (string)'    = 'Connecting to remote server connector9.example.local failed with the following error message : The WinRM client cannot process the request because the server name cannot be resolved. For more information, see the about_Remote_Troubleshooting Help topic.'
+        'name not resolved (record)'    = (& $rec (& $tx 'The WinRM client cannot process the request because the server name cannot be resolved.' -2144108103) 'ComputerNotFound,PSSessionOpenFailed')
+        'port closed (record)'          = (& $rec (& $tx 'WinRM cannot complete the operation. Verify that the specified computer name is valid, that the computer is accessible over the network, and that a firewall exception for the WinRM service is enabled and allows access from this computer.' 53) 'WinRMOperationTimeout,PSSessionOpenFailed')
+        'server identity, same ending'  = (& $tx 'WinRM cannot process the request. The following error with errorcode 0x80090322 occurred while using Negotiate authentication: An unknown security error occurred. This can occur if the provided credentials are not valid on the target server, or if the server identity could not be verified.' -2144108387)
+    }
+    foreach ($k in $no.Keys) { Assert-True (-not (Test-WinRMSignInRefused $no[$k])) "taken as refused: $k" }
+    Assert-Equal (Get-WinRMSignInReason (& $rec (& $tx $seen 0) 'PSSessionOpenFailed')) 'WinRM cannot process the request. The following error with error code 0x8009030e occurred while using Negotiate authentication: A specified logon session does not exist. It may already have been terminated. This can occur if the provided credentials are not valid on the target server, or if the server identity could not be verified. If you trust the server identity, add the server name to the TrustedHosts list, and then try the request again.' 'reason without the boilerplate'
 }
 Invoke-TestCase 'WinRM: the refused sign-in message is the one the health gate stops on, in dry runs too (static)' {
     Assert-True ($orchText.Contains('Could not sign in to $($X.Host) over WinRM as $($cred.UserName): ')) 'Start-ConnectorRun does not throw the sign-in message'
@@ -258,11 +306,84 @@ Invoke-TestCase 'helper, -Schedule (by the syntax tree): checks before secrets.d
     $inner = @(& $assigned '$inner')
     Assert-True ($inner.Count -eq 1 -and $inner[0].Right.Extent.Text -match '^Get-TaskCommand .*-JobFile \$JobFile .*-SkipDomainCheck:\$SkipDomainCheck -AuditLog \$script:TaskAuditLog -ErrorLog \$script:TaskErrorLog$') "inner: $($inner.Right.Extent.Text)"
     $checks = @(& $named 'Get-ScheduleProblem'); $write = @(& $named 'Set-Content')
-    Assert-True ($checks.Count -eq 2 -and $write.Count -eq 1 -and $checks[1].Extent.StartOffset -lt $write[0].Extent.StartOffset -and $checks[1].Extent.StartOffset -gt (& $named 'Read-UiSecret')[0].Extent.StartOffset) 'the checks are not made before secrets.dat is written, and again after the password prompt'
+    Assert-True ($checks.Count -eq 2 -and $write.Count -ge 1 -and @($write | Where-Object { $_.Extent.StartOffset -lt $checks[1].Extent.StartOffset }).Count -eq 0 -and $checks[1].Extent.StartOffset -gt (& $named 'Read-UiSecret')[0].Extent.StartOffset) 'the checks are not made before secrets.dat is written, and again after the password prompt'
     # one construction of the self-deleting argument, used by the run-as task and by -Schedule
     Assert-True (@([regex]::Matches($helperText, 'schtasks\.exe /Delete')).Count -eq 1) 'the delete command is written in more than one place'
     Assert-True (@($hast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-SelfDeletingTaskArgument' }, $true)).Count -eq 2) 'the run-as task and -Schedule do not both use Get-SelfDeletingTaskArgument'
     Assert-True ($helperText.Contains('$JobFile = (Resolve-Path -LiteralPath $JobFile).ProviderPath')) 'the job file is not made a full path'
+}
+Invoke-TestCase 'helper, -Schedule (by the syntax tree, #11): secrets.dat has machine-scope protection, no ConvertFrom-SecureString, access restricted, removed on failure; the error names the step' {
+    $body = @($hast.FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -eq '$Schedule' }, $true))[0].Clauses[0].Item2
+    $cmds = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))
+    $named = { param([string]$Name) @($cmds | Where-Object { $_.GetCommandName() -eq $Name }) }
+    Assert-True (@(& $named 'ConvertFrom-SecureString').Count -eq 0) 'the -Schedule block still uses ConvertFrom-SecureString (user-scope protection, refused in an SSH key session)'
+    $prot = @(& $named 'Protect-MachineText')
+    Assert-True ($prot.Count -eq 4) "Protect-MachineText calls (Cfg, Pfx, Svc, Proxy): $($prot.Count)"
+    $hash = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$o' -and $n.Right.Extent.Text -match '^@\{' }, $true))
+    Assert-True ($hash.Count -eq 1 -and $hash[0].Right.Extent.Text -match "Scope = 'Machine'" -and $hash[0].Right.Extent.Text -match 'Cfg = \(Protect-MachineText ') "the secrets are not marked Scope = 'Machine': $($hash.Right.Extent.Text)"
+    $write = @(& $named 'Set-Content'); $acl = @($cmds | Where-Object { $_.GetCommandName() -eq 'icacls.exe' })
+    Assert-True ($write.Count -eq 2 -and $acl.Count -eq 1 -and $write[0].Extent.StartOffset -lt $acl[0].Extent.StartOffset -and $acl[0].Extent.StartOffset -lt $write[1].Extent.StartOffset) 'secrets.dat is not made empty, restricted with icacls, then written'
+    Assert-True ($acl[0].Extent.Text -match "/inheritance:r /grant:r '\*S-1-5-32-544:F' '\*S-1-5-18:F'") "icacls: $($acl.Extent.Text)"
+    Assert-True ($prot[-1].Extent.StartOffset -lt $write[0].Extent.StartOffset) 'the passwords are protected after the file is written'
+    $catch = @($hast.FindAll({ param($n) $n -is [System.Management.Automation.Language.TryStatementAst] -and $n.Extent.StartOffset -gt $body.Extent.StartOffset -and $n.Extent.EndOffset -le $body.Extent.EndOffset }, $true))[0].CatchClauses[0].Body.Extent.Text
+    Assert-True ($catch.Contains('Could not protect the passwords for the scheduled task') -and $catch.Contains('Could not write the secrets file') -and $catch.Contains('Could not register the scheduled task') -and $catch.Contains("'Not scheduled'")) 'the error does not name the step that failed'
+    Assert-True ($catch -match 'if \(\$madeSecrets\) \{\s*Remove-Item -LiteralPath \$sfPath') 'secrets.dat is not removed when a later step fails'
+    # an earlier -Schedule's secrets.dat (its task may still be pending) is moved aside before the
+    # new file is made, deleted only after the new task is registered, and put back on failure
+    $mv = @(& $named 'Move-Item'); $reg = @(& $named 'Register-ScheduledTask')
+    $bakRm = @(& $named 'Remove-Item' | Where-Object { $_.Extent.Text -match '-LiteralPath \$bakPath' })
+    Assert-True ($mv.Count -ge 1 -and $mv[0].Extent.Text -match '-LiteralPath \$sfPath -Destination \$bakPath' -and $mv[0].Extent.StartOffset -lt $write[0].Extent.StartOffset) "the earlier secrets.dat is not moved aside before the new one is made: $($mv.Extent.Text)"
+    Assert-True ($bakRm.Count -eq 1 -and $bakRm[0].Extent.StartOffset -gt $reg[0].Extent.StartOffset) 'the earlier secrets.dat is not deleted only after the new task is registered'
+    Assert-True ($catch -match 'Move-Item -LiteralPath \$bakPath -Destination \$sfPath') 'the earlier secrets.dat is not put back when this run fails'
+    $steps = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$step' }, $true) | ForEach-Object { $_.Right.Extent.Text })
+    Assert-Equal ($steps -join ',') "'check','protect','write','register'" 'the steps, in order'
+    # the reader: a Machine-scope file is read with Unprotect-MachineText, and deleted before it is decrypted
+    $rd = $helperText.IndexOf('$sf = Get-Content -Raw -LiteralPath $SecretsFile | ConvertFrom-Json')
+    $rm = $helperText.IndexOf('Remove-Item -LiteralPath $SecretsFile -Force', [Math]::Max($rd, 0))
+    $mc = $helperText.IndexOf("if (`$sf.Scope -eq 'Machine') {", [Math]::Max($rd, 0))
+    $un = $helperText.IndexOf('ConvertTo-SecureString (Unprotect-MachineText $sf.Cfg) -AsPlainText -Force', [Math]::Max($rd, 0))
+    Assert-True ($rd -gt 0 -and $rm -gt $rd -and $mc -gt $rm -and $un -gt $mc) 'the -SecretsFile reader does not delete the file, then read a Machine-scope file with Unprotect-MachineText'
+}
+Invoke-TestCase 'helper, -Schedule (by the syntax tree, #12): the task runs as the chosen account with highest privileges; a local account for a Kerberos job is refused before anything is written' {
+    $body = @($hast.FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -eq '$Schedule' }, $true))[0].Clauses[0].Item2
+    $cmds = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))
+    $named = { param([string]$Name) @($cmds | Where-Object { $_.GetCommandName() -eq $Name }) }
+    $reg = @(& $named 'Register-ScheduledTask')
+    Assert-True ($reg.Count -eq 1 -and $reg[0].Extent.Text -match ' -User \$acct -Password \$plain -RunLevel Highest ') "Register-ScheduledTask: $($reg.Extent.Text)"
+    $acctSet = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$acct' }, $true) | ForEach-Object { $_.Right.Extent.Text })
+    Assert-True ($acctSet -contains '([string]$RunAsUser).Trim()' -and $acctSet -contains '$typed' -and $acctSet -contains '$offer') "the account is not -RunAsUser, the answer, or the signed-in account: $($acctSet -join ' | ')"
+    Assert-True (@($acctSet | Where-Object { $_ -match 'GetCurrent' }).Count -eq 0) 'the account is still taken straight from the signed-in account'
+    $ask = @(& $named 'Read-UiLine')
+    Assert-True ($ask.Count -eq 1 -and $ask[0].Extent.Text -eq 'Read-UiLine $q') "the account question: $($ask.Extent.Text)"
+    Assert-True ($body.Extent.Text.Contains("`$q = 'Account the scheduled job runs as (DOMAIN\user)'")) 'the account question text'
+    $nd = @($body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$needsDomain' }, $true))
+    Assert-True ($nd.Count -eq 1 -and $nd[0].Right.Extent.Text -eq "('KerberosAuthService' -in @(`$job.Services))") "a Kerberos job: $($nd.Right.Extent.Text)"
+    $chk = @(& $named 'Get-ScheduleAccountProblem' | Where-Object { $_.Extent.Text -match '-Account \$acct ' })
+    $first = @(@(& $named 'Set-Content') + @($cmds | Where-Object { $_.GetCommandName() -eq 'icacls.exe' }) + @(& $named 'Register-ScheduledTask') + @(& $named 'Protect-MachineText') + @(& $named 'Read-UiSecret') | Sort-Object { $_.Extent.StartOffset })[0]
+    Assert-True ($chk.Count -eq 1 -and $chk[0].Extent.Text -match '-NeedsDomain \$needsDomain' -and $chk[0].Extent.StartOffset -lt $first.Extent.StartOffset) 'the account is not checked before its password is asked and anything is written'
+    $after = $body.Extent.Text.Substring($chk[0].Extent.EndOffset - $body.Extent.StartOffset, 40)
+    Assert-True ($after -match '^\s*\$why = |^\s*if \(\$why\) \{ throw \$why \}') "a refused account does not stop the block: $after"
+    $say = @(& $named 'Say' | Where-Object { $_.Extent.Text -match 'Task Scheduler keeps the Windows password of \$acct until the task deletes itself' })
+    Assert-True ($say.Count -eq 1 -and $say[0].Extent.StartOffset -lt @(& $named 'Read-UiSecret')[0].Extent.StartOffset) 'it is not said, before the password is asked, that Task Scheduler keeps the password until the task deletes itself'
+    # -Schedule with -RunAsUser is no longer refused, and then does not start the run-as task now
+    Assert-True ($helperText.Contains("if (`$Schedule -and `$RunAsTask) {") -and -not $helperText.Contains('if ($Schedule -and ($RunAsUser -or $RunAsTask))')) 'the -Schedule/-RunAsUser conflict is still there, or the -RunAsTask one is gone'
+    Assert-True ($helperText.Contains('if (($RunAsTask -or $RunAsUser) -and -not $RepairCertificate -and -not $scheduleRun) {') -and $helperText.Contains('$scheduleRun = [bool]$Schedule -and -not ($RepairKeytab -or $RepairCertificate)')) 'with -Schedule, -RunAsUser would start the run-as task now'
+}
+Invoke-TestCase 'helper, -Schedule account (#12): a local account is refused for a Kerberos job, a domain account is not; a built-in account is always refused' {
+    $local = @('administrator', '.\administrator', 'CONNECTOR1\administrator', 'connector1\admin', '\admin', 'NT AUTHORITY\admin', 'BUILTIN\Administrators', 'admin@example.local')
+    foreach ($a in $local) {
+        $m = Get-ScheduleAccountProblem -Account $a -NeedsDomain $true -Computer 'CONNECTOR1'
+        Assert-True ($m -like "$a is not a domain account. This job includes the Kerberos Auth service*give the account as DOMAIN\user") "a local account for a Kerberos job, ${a}: '$m'"
+        Assert-Equal (Get-ScheduleAccountProblem -Account $a -NeedsDomain $false -Computer 'CONNECTOR1') '' "a local account for a job without Kerberos, $a"
+    }
+    foreach ($a in 'EXAMPLE\svc-access', 'EXAMPLE\admin', ' EXAMPLE\admin ') {
+        Assert-Equal (Get-ScheduleAccountProblem -Account $a -NeedsDomain $true -Computer 'CONNECTOR1') '' "a domain account, $a"
+    }
+    foreach ($a in 'SYSTEM', 'NT AUTHORITY\SYSTEM', 'nt authority\network service', 'LocalSystem') {
+        foreach ($nd in $true, $false) { Assert-True ((Get-ScheduleAccountProblem -Account $a -NeedsDomain $nd -Computer 'CONNECTOR1') -like '*is a built-in service account*') "a built-in account, $a ($nd)" }
+    }
+    Assert-Equal (Get-ScheduleAccountProblem -Account '' -NeedsDomain $false -Computer 'CONNECTOR1') 'no account was given for the scheduled job' 'no account'
+    Assert-Equal (Get-ScheduleAccountProblem -Account '   ' -NeedsDomain $true -Computer 'CONNECTOR1') 'no account was given for the scheduled job' 'blank account'
 }
 Invoke-TestCase 'helper, -Schedule: a time that has passed, and a task of that name that is running, are refused; a later time is not' {
     $state = $null
@@ -512,7 +633,8 @@ Invoke-TestCase 'SSH sign-in check: a refused key stops the run before any promp
     Set-FakeSsh @{ FAKE_SSH_FAIL_HOST = 'connector4.example.local'; FAKE_SSH_FAIL_TEXT = 'Permission denied (publickey).' }; Clear-Calls
     try { $r = Invoke-Tool @('-Tenant', 'TENANT2', '-DryRun', '-ErrorLog', $err, '-AuditLog', $audit) -NoInput } finally { Set-FakeSsh @{} }
     Assert-True ($r.Code -eq 1) "exit $($r.Code): $($r.Text)"
-    Assert-True ($r.Text -match 'cannot reach connector4\.example\.local over SSH: Permission denied \(publickey\)\. Hint: the key was not accepted: name it with -SshKey <file>, or add an IdentityFile line for these hosts to the SSH settings file \(Getting Started 4\.7\); test by hand with ssh administrator@connector4\.example\.local hostname\.') "no reason or hint: $($r.Text)"
+    Assert-True ($r.Text.Contains('cannot reach connector4.example.local over SSH: Permission denied (publickey). Hint: the connector refused the sign-in for administrator: the account does not exist there, or its key was not accepted; SSH does not say which. Check the account name (SshUser in the fleet file, or -SshUser) and that its key is authorised on the connector (Getting Started 4.4); name the key with -SshKey <file>, or with an IdentityFile line for these hosts in the SSH settings file (Getting Started 4.7). An ''Invalid user'' line in the connector''s OpenSSH/Operational event log means the account does not exist. Test by hand: ssh administrator@connector4.example.local hostname')) "no reason or hint: $($r.Text)"
+    Assert-True ($r.Text -notmatch 'administrator@connector4\.example\.local hostname\.') "the test command is followed by a full stop: $($r.Text)"
     Assert-True ($r.Text -match 'The SSH sign-in check failed on 1 of 2 connector\(s\): connector4\.example\.local\. Nothing was changed and no password was asked\.') 'no stop message'
     Assert-True ($r.Text -match 'leave those connectors out with -Connector \(for the others: -Connector connector3\.example\.local\)') 'the others are not offered'
     Assert-True ($r.Text -notmatch 'no terminal to type it in' -and $r.Text -notmatch 'Passwords for tenant' -and $r.Text -notmatch 'SSH sign-in checked on') 'it went on to a prompt'
@@ -581,17 +703,29 @@ Invoke-TestCase 'Stage: the folder script answers ok only when the folders are t
         Assert-True (@(Get-Calls $scpLog).Count -eq 0) 'it went on to copy files'
     } finally { Remove-Item -LiteralPath $pd -Force -ErrorAction SilentlyContinue }
 }
-Invoke-TestCase 'helper: -Schedule with -RunAsUser is refused before anything is asked or written' {
+Invoke-TestCase 'helper: -Schedule with -RunAsTask is refused before anything is asked or written' {
     $hp = Join-Path $fd 'Invoke-ConnectorUpgradeLocal.ps1'
     $err = Join-Path $base 'helper-errors.log'; $audit = Join-Path $base 'helper-audit.log'
+    $out = '' | & pwsh -NoLogo -NoProfile -File $hp -Prompt -Schedule '2099-01-01 22:30' -RunAsTask -AuditLog $audit -ErrorLog $err 2>&1
+    $code = $LASTEXITCODE; $t = (@($out | ForEach-Object { [string]$_ }) -join "`n") -replace '\s*\n\s*', ' '
+    Assert-True ($code -eq 1) "exit ${code}: $t"
+    Assert-True ($t -match '-Schedule cannot be used with -RunAsTask: -RunAsTask starts the work now\. To schedule the job under another account, use -Prompt -Schedule, and give the account at its prompt or with -RunAsUser\.') "message: $t"
+    Assert-True ($t -notmatch 'password') "a password was asked: $t"
+    Assert-True ((Get-Content -Raw -LiteralPath $err) -match '\[ERROR\] \[args\] -Schedule cannot be used with -RunAsTask') 'error log'
+    $line = @(Get-Content $audit | Where-Object { $_ -notmatch '^#' })[-1]
+    Assert-True ($line -match ' outcome=FAILED ' -and $line -match ' stage=args') "audit line: $line"
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $fd 'secrets.dat'))) 'secrets.dat was written'
+}
+Invoke-TestCase 'helper: -Schedule with -RunAsUser is no longer refused as a switch conflict (it names the account of the scheduled job)' {
+    $hp = Join-Path $fd 'Invoke-ConnectorUpgradeLocal.ps1'
+    $err = Join-Path $base 'helper-errors-2.log'; $audit = Join-Path $base 'helper-audit-2.log'
+    # past the switch checks, this stops at the elevation check (not Windows, or not elevated): nothing asked or written
     $out = '' | & pwsh -NoLogo -NoProfile -File $hp -Prompt -Schedule '2099-01-01 22:30' -RunAsUser 'EXAMPLE\svc-access' -AuditLog $audit -ErrorLog $err 2>&1
     $code = $LASTEXITCODE; $t = (@($out | ForEach-Object { [string]$_ }) -join "`n") -replace '\s*\n\s*', ' '
     Assert-True ($code -eq 1) "exit ${code}: $t"
-    Assert-True ($t -match '-Schedule cannot be used with -RunAsUser or -RunAsTask: the run-as task starts the work now\.') "message: $t"
-    Assert-True ($t -notmatch 'password') "a password was asked: $t"
-    Assert-True ((Get-Content -Raw -LiteralPath $err) -match '\[ERROR\] \[args\] -Schedule cannot be used with -RunAsUser') 'error log'
+    Assert-True ($t -notmatch 'cannot be used with') "refused as a conflict: $t"
     $line = @(Get-Content $audit | Where-Object { $_ -notmatch '^#' })[-1]
-    Assert-True ($line -match ' outcome=FAILED ' -and $line -match ' stage=args') "audit line: $line"
+    Assert-True ($line -notmatch ' stage=args') "audit line: $line"
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $fd 'secrets.dat'))) 'secrets.dat was written'
 }
 

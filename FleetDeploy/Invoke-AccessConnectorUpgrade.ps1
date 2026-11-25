@@ -43,7 +43,7 @@ $ErrorActionPreference = 'Stop'
 # 'pwsh -File' passes "A,B" as one string, so split comma lists here.
 if ($Tenant)    { $Tenant    = @($Tenant    | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
 if ($Connector) { $Connector = @($Connector | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
-$script:Version  = '1.5.1'
+$script:Version  = '1.5.2'
 $script:UiWidth  = 78
 $script:Name     = 'Invoke-AccessConnectorUpgrade.ps1'
 $script:Started  = Get-Date
@@ -568,8 +568,13 @@ function Get-SshHint { param([string]$Reason, [string]$User, [string]$HostName, 
     if ($r -match 'Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED') {
         return "the connector's host key changed: remove the old one with ssh-keygen -R $HostName and check the new one (Getting Started 4.6)." }
     if ($r -match 'Permission denied') {
-        if ($KeyFile) { return "the key $k was not accepted: check that its public key is authorised on the connector (Getting Started 4.4); test by hand with ssh -i $k $t hostname." }
-        return "the key was not accepted: name it with -SshKey <file>, or add an IdentityFile line for these hosts to the SSH settings file (Getting Started 4.7); test by hand with ssh $t hostname." }
+        # The server gives the same answer for an account that does not exist there and for a key
+        # it does not accept, so the hint names both. The test command comes last, with nothing
+        # after it, so that it can be copied as shown.
+        $why = "the connector refused the sign-in for ${u}: the account does not exist there, or its key was not accepted; SSH does not say which. Check the account name (SshUser in the fleet file, or -SshUser)"
+        $tell = "An 'Invalid user' line in the connector's OpenSSH/Operational event log means the account does not exist."
+        if ($KeyFile) { return "$why and that the public key of $k is authorised for it on the connector (Getting Started 4.4). $tell Test by hand: ssh -i $k $t hostname" }
+        return "$why and that its key is authorised on the connector (Getting Started 4.4); name the key with -SshKey <file>, or with an IdentityFile line for these hosts in the SSH settings file (Getting Started 4.7). $tell Test by hand: ssh $t hostname" }
     if ($r -match 'Could not resolve hostname') { return 'the name does not resolve from this machine.' }
     if ($r -match 'Connection timed out|Operation timed out|Connection refused|No route to host') {
         $port = if ($r -match '\bport (\d+)\b') { $Matches[1] } else { '22' }
@@ -632,13 +637,19 @@ function Test-SshSignInCheckNeeded { param([string]$Mode)
     return ($Mode -in 'SSH','RepairKeytab','RepairCertificate') }
 function Test-WinRMSignInRefused { param($Failure)
     # True when a WinRM session (New-PSSession) could not be opened because the connector refused
-    # the sign-in: access denied, a logon failure (a wrong user name or password), or an account
-    # that is locked out, disabled or has an expired password. False when the connector was not
-    # reached (name, network, firewall, WinRM not listening) and for anything else. $Failure is an
-    # ErrorRecord, an exception or a message.
+    # the sign-in: access denied, a logon failure (a wrong user name or password), an account
+    # that is locked out, disabled or has an expired password, or credentials Negotiate cannot use
+    # (SEC_E_NO_CREDENTIALS, 0x8009030E, "A specified logon session does not exist": seen with an
+    # account that does not exist). False when the connector was not reached (name, network,
+    # firewall, WinRM not listening) and for anything else. $Failure is an ErrorRecord, an
+    # exception or a message.
     if ($null -eq $Failure) { return $false }
-    $codes = @(5, 1326, 1327, 1330, 1331, 1907, 1909)
-    $words = 'access is denied|access denied|logon failure|logon attempt failed|user name or password is incorrect|unknown user name or bad password|account is currently locked out|referenced account is currently locked|account is currently disabled|password has expired|password must be changed'
+    # 0x8009030E as a signed 32-bit HRESULT (-2146893042) and as the same bits read unsigned
+    $codes = @(5, 1326, 1327, 1330, 1331, 1907, 1909, -2146893042, 2148074254)
+    $words = 'access is denied|access denied|logon failure|logon attempt failed|user name or password is incorrect|unknown user name or bad password|account is currently locked out|referenced account is currently locked|account is currently disabled|password has expired|password must be changed|logon session does not exist|0x8009030e'
+    # Not matched: 'credentials are not valid on the target server, or if the server identity could
+    # not be verified', the general ending of Negotiate errors, which a server-identity fault
+    # (a connector not properly reached) gives as well.
     $texts = [System.Collections.Generic.List[string]]::new()
     $ex = $null
     if ($Failure -is [System.Management.Automation.ErrorRecord]) {
@@ -649,7 +660,8 @@ function Test-WinRMSignInRefused { param($Failure)
     elseif ($Failure -is [System.Exception]) { $ex = $Failure }
     else { $texts.Add([string]$Failure) }
     for ($i = 0; $ex -and $i -lt 10; $i++) {
-        if ($ex -is [System.Management.Automation.Remoting.PSRemotingTransportException] -and ([int]$ex.ErrorCode -in $codes)) { return $true }
+        if ($ex -is [System.Management.Automation.Remoting.PSRemotingTransportException] -and ([long]$ex.ErrorCode -in $codes)) { return $true }
+        if ([long]$ex.HResult -eq -2146893042) { return $true }
         $texts.Add([string]$ex.Message)
         $ex = $ex.InnerException
     }
@@ -2743,7 +2755,7 @@ if ($Mode -eq 'Stage') {
     Write-UiSection 'NEXT STEPS ON EACH CONNECTOR'
     Write-UiText 'Sign in as a domain admin, one connector at a time per tenant, and run:'
     Write-UiCmd "$RemoteStageDir\Run-Upgrade.cmd"
-    Write-UiText 'or, to schedule it under your signed-in account:'
+    Write-UiText 'or, to schedule it (it asks for the account the job runs as: a domain admin for a connector with the Kerberos Auth service; this works over ssh -t as well):'
     Write-UiCmd "powershell -ExecutionPolicy Bypass -File $RemoteStageDir\Invoke-ConnectorUpgradeLocal.ps1 -Prompt -Schedule `"yyyy-MM-dd HH:mm`""
     Write-UiText 'Afterwards check every connector with: -Mode Verify'
     Write-AuditEntry -Outcome $(if ($bad) { 'FAILED' } else { 'SUCCESS' }) -Stage 'stage' -Rows $plan.Count
