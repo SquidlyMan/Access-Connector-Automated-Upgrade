@@ -1,5 +1,7 @@
 # Access Connector Automated Upgrade
 
+[![Checks](https://github.com/SquidlyMan/Access-Connector-Automated-Upgrade/actions/workflows/checks.yml/badge.svg)](https://github.com/SquidlyMan/Access-Connector-Automated-Upgrade/actions/workflows/checks.yml)
+
 Install, upgrade and repair Omnissa Access Connectors from one command, one connector at a time per tenant, with checks before and after every change.
 
 The tool is not tied to a connector version. It installs whichever installer file your fleet file names, so the same scripts handle the next release, a clean install on a new server, or a same-version reinstall.
@@ -117,7 +119,7 @@ Version 1.5.2. The tool has upgraded, clean installed and repaired connectors in
 
 1.5.2 fixes what the first runs of 1.5.1 found on 2026-11-24, and makes the helper's `-Schedule` work over SSH: it now asks for the account the job runs as (a domain admin for a connector with Kerberos Auth) and protects the passwords it keeps for the job for the server, not for the signed-in user. It also changes the SSH `Permission denied` hint, which now names a wrong account as well as the key and ends with a test command that can be copied, and counts the WinRM error `0x8009030e` as a refused sign-in. These are built and tested offline; none has yet run on a connector (see the [Changelog](CHANGELOG.md)).
 
-The set-up scripts in `Prerequisites` carry their own versions: 1.0.1 for `Install-OpenSSHServer.ps1` and for `Install-PowerShell7.ps1` with its launcher `Install-PowerShell7.cmd`, 1.0.0 for `Deploy-OpenSSH-GPO.ps1`, and 2.1.0 for the macOS one, which continues the author's earlier 2.0.1. On 2026-11-24 the 1.0.0 versions of the PowerShell scripts and 2.1.0 of the macOS one ran in the lab: `Install-OpenSSHServer.ps1` left ten servers that already ran OpenSSH Server offering key sign-in only, `Deploy-OpenSSH-GPO.ps1` deployed it to one OU, where two restarted servers applied it, and `install-powershell7-macos.sh --dry-run` ran on a Mac. `Install-PowerShell7.ps1` 1.0.0 ran once with `-CheckOnly` and stopped at its release lookup under Windows PowerShell 5.1, the fault 1.0.1 fixes. Not yet run: the 1.0.1 versions, any install of OpenSSH Server or PowerShell 7 by these scripts, and their key and firewall steps. They are rewritten from the author's earlier scripts, which were used in the lab, and were checked with offline simulations on macOS, with stand-ins for Windows, Group Policy, Active Directory, sudo and the installers (Validation Record).
+The set-up scripts in `Prerequisites` carry their own versions: 1.0.1 for `Install-OpenSSHServer.ps1` and for `Install-PowerShell7.ps1` with its launcher `Install-PowerShell7.cmd`, 1.0.0 for `Deploy-OpenSSH-GPO.ps1`, and 2.1.1 for the macOS one, which continues the author's earlier 2.0.1. On 2026-11-24 the 1.0.0 versions of the PowerShell scripts and 2.1.0 of the macOS one ran in the lab: `Install-OpenSSHServer.ps1` left ten servers that already ran OpenSSH Server offering key sign-in only, `Deploy-OpenSSH-GPO.ps1` deployed it to one OU, where two restarted servers applied it, and `install-powershell7-macos.sh --dry-run` ran on a Mac. `Install-PowerShell7.ps1` 1.0.0 ran once with `-CheckOnly` and stopped at its release lookup under Windows PowerShell 5.1, the fault 1.0.1 fixes. Not yet run: the 1.0.1 versions, any install of OpenSSH Server or PowerShell 7 by these scripts, and their key and firewall steps. They are rewritten from the author's earlier scripts, which were used in the lab, and were checked with offline simulations on macOS, with stand-ins for Windows, Group Policy, Active Directory, sudo and the installers (Validation Record).
 
 Of what 1.5.1 adds, these ran against the lab connectors on 2026-11-24: Verify through the new SSH transport (all ten, exit code 0) and its exit code 1 on a red line, the SSH sign-in check before anything is asked, a refused sign-in stopping a dry run with SSH's own reason and a hint and no password asked, dry runs through the scheduled task and of both repair modes, a WinRM dry run (operator's report), and a `-Schedule` job at the console that ran as its domain account and deleted itself. Not yet run with 1.5.1 or 1.5.2: an upgrade, install or real repair. The rest of what is said below about 1.5.0 still holds.
 
@@ -136,6 +138,8 @@ pwsh ./FleetDeploy/Invoke-AccessConnectorUpgrade.ps1 -Help
 Each script in `Prerequisites` has `-Help` as well (`--help` for the macOS one).
 
 ## Checking the scripts
+
+GitHub runs these checks on every push and pull request, on Linux and macOS (`.github/workflows/checks.yml`); the result is the badge at the top. To run them yourself:
 
 ```bash
 sh tools/check_scripts.sh

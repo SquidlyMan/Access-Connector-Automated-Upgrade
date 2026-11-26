@@ -38,7 +38,7 @@ How the tool handles passwords, keys and files, and what you should do yourself.
 
 ## The set-up scripts in Prerequisites
 
-These scripts are built and tested offline. They have run in the lab in part, the PowerShell scripts as 1.0.0 and the macOS one as 2.1.0: `Install-OpenSSHServer.ps1` on ten servers that already had OpenSSH Server, `Deploy-OpenSSH-GPO.ps1` against one domain, `install-powershell7-macos.sh` with `--dry-run`, and `Install-PowerShell7.ps1` once with `-CheckOnly`; the 1.0.1 versions have not yet run (Validation Record). What follows is what their code does. None of them takes or writes a password, key passphrase or token. On macOS, sudo asks for your password for the install step, and the script never sees it. On Windows, the elevation prompt that `Install-PowerShell7.cmd` asks for is Windows' own.
+These scripts are built and tested offline. They have run in the lab in part, the PowerShell scripts as 1.0.0 and the macOS one as 2.1.0: `Install-OpenSSHServer.ps1` on ten servers that already had OpenSSH Server, `Deploy-OpenSSH-GPO.ps1` against one domain, `install-powershell7-macos.sh` with `--dry-run`, and `Install-PowerShell7.ps1` once with `-CheckOnly`; the 1.0.1 versions and the macOS one's 2.1.1, which changes nothing it does, have not yet run (Validation Record). What follows is what their code does. None of them takes or writes a password, key passphrase or token. On macOS, sudo asks for your password for the install step, and the script never sees it. On Windows, the elevation prompt that `Install-PowerShell7.cmd` asks for is Windows' own.
 
 **`Install-OpenSSHServer.ps1`** (one server):
 

@@ -2,6 +2,11 @@
 
 Versions are those of `Invoke-AccessConnectorUpgrade.ps1` and `Invoke-ConnectorUpgradeLocal.ps1`, which are released together.
 
+## Unreleased
+
+- **The offline checks run on GitHub on every push and pull request**, on Linux and macOS (`.github/workflows/checks.yml`), with a badge in the README. Linux has shellcheck, so `check_scripts.sh` ran it on the macOS installer for the first time.
+- **`install-powershell7-macos.sh` 2.1.1: shellcheck clean, no change to what it does.** Removed three names it never used (exit codes 3 and 5, a colour, and the variable of `--allow-plaintext-secrets`, which is still accepted and reported as ignored), and marked the deliberate match of a typed `~` for shellcheck (SC2088).
+
 ## 1.5.2 - 2026-11-24
 
 Fixes for the faults the first runs of 1.5.1 found on 2026-11-24, and `-Schedule` over SSH. Every new path is built and tested offline, not yet proven on a server (Validation Record).

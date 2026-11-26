@@ -20,7 +20,7 @@
 # ATTRIBUTION  (standards: never redacted by any switch)
 #   Author ........ the copyright holder named in LICENSE (repository root)
 #   Created ....... 2026-10-08
-#   Version ....... 2.1.0
+#   Version ....... 2.1.1
 #   Derived from .. Deploy-PowerShell7.ps1 (same author, Windows GPO script)
 #
 # REVISION HISTORY
@@ -73,6 +73,12 @@
 #                      unknown switches; an interrupted command's capture file
 #                      is removed. The scope text names /etc/shells, the
 #                      manual page and the installer receipt.
+#   2026-11-26  2.1.1  No change to what the script does: three names it
+#                      never used are removed (exit codes 3 and 5, a colour and
+#                      the variable of --allow-plaintext-secrets, which is still
+#                      accepted and reported as ignored), and the deliberate
+#                      match of a typed ~ is marked for shellcheck, which now
+#                      runs on every push.
 #
 # LICENCE
 #   MIT License; see LICENSE at the root of this repository.
@@ -86,7 +92,7 @@
 # ---- per-script constants ---------------------------------------------------
 SCRIPT_NAME="${0##*/}"
 SCRIPT_CANON="Install-PowerShell7"
-SCRIPT_VERSION="2.1.0"
+SCRIPT_VERSION="2.1.1"
 SCRIPT_CREATED="2026-10-08"
 SCRIPT_LICENCE="MIT License; see the LICENSE file at the root of this repository."
 SCRIPT_SUPPORT="There is no support channel. For PowerShell itself, see github.com/PowerShell/PowerShell."
@@ -106,8 +112,9 @@ set -u
 set -o pipefail
 
 # ---- exit codes (D3) --------------------------------------------------------
-# 3 (partial) and 5 (no result) belong to the template; this script does not use them.
-EX_OK=0; EX_CONFIG=1; EX_SETUP=2; EX_PARTIAL=3; EX_TOTAL=4; EX_NORESULT=5; EX_INTERRUPT=130
+# 3 (partial) and 5 (no result) belong to the template; this script does not use them,
+# so they are not defined.
+EX_OK=0; EX_CONFIG=1; EX_SETUP=2; EX_TOTAL=4; EX_INTERRUPT=130
 
 # ---- runtime check (D1) -----------------------------------------------------
 if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 3 ]; then
@@ -123,7 +130,7 @@ fi
 UI_WIDTH=78
 QUIET=""; VERBOSE=""; DRY_RUN=""; NON_INTERACTIVE=""; HELP=""; SHOW_VERSION=""
 AUDIT_LOG=""; ERROR_LOG=""; RUN_LOG=""; CONFIG_FILE=""; EXPORT_TEMPLATE=""
-SAVE_CONFIG=""; ALLOW_PLAINTEXT=""
+SAVE_CONFIG=""
 SUPPLIED=""
 AUDIT_PATH=""; ERROR_PATH=""; RUN_LOG_PATH=""
 AUDIT_WRITTEN=0; OUTCOME="FAILED"; STAGE="init"; DETAIL=""; NO_AUDIT=""
@@ -131,7 +138,7 @@ EARLY_BUF=""; SECRETS=""; PROBLEMS=""; CONFLICTS=""
 # The private folder of this run, a command's capture file, a package half copied into the cache
 WORK_BASE=""; WORK_DIR=""; TMP_CAPTURE=""; TMP_KEEP=""; RUN_OUT=""; MY_UID=""; SAFE_WHY=""
 C_RESET=""; C_BANNER=""; C_SECTION=""; C_LEGAL=""; C_RULE=""; C_CMD=""; C_FLAG=""; C_TEXT=""
-C_WARN=""; C_NOTICE=""; C_CAUTION=""; C_OK=""; C_INFO=""; C_URL=""; C_DIM=""
+C_WARN=""; C_NOTICE=""; C_CAUTION=""; C_OK=""; C_INFO=""; C_DIM=""
 # Settings this script understands (config allow-list)
 SETTING_CHANNEL=""; SETTING_PIN=""; SETTING_CACHE=""; SETTING_KEEP=""; SETTING_FORCE=""
 CACHE_EXPLICIT=""; PIN_FROM_FILE=""
@@ -163,7 +170,7 @@ ui_init() {
     C_RESET="${e}[0m"; C_BANNER="${e}[1;97;44m"; C_SECTION="${e}[1;96;100m"; C_LEGAL="${e}[1;97;41m"
     C_RULE="${e}[38;5;240m"; C_CMD="${e}[92m"; C_FLAG="${e}[1;93m"; C_TEXT="${e}[38;5;250m"
     C_WARN="${e}[1;91m"; C_NOTICE="${e}[1;93m"; C_CAUTION="${e}[93m"; C_OK="${e}[92m"; C_INFO="${e}[96m"
-    C_URL="${e}[4;94m"; C_DIM="${e}[38;5;244m"
+    C_DIM="${e}[38;5;244m"
   fi
   return 0
 }
@@ -245,6 +252,8 @@ show_disclaimer() {
   ui_warn "Support: $SCRIPT_SUPPORT"
 }
 
+# The "~" below is the text the user typed, matched on purpose; HOME takes its place.
+# shellcheck disable=SC2088
 expand_tilde() { case "$1" in "~") printf '%s' "${HOME:-}" ;; "~/"*) printf '%s/%s' "${HOME:-}" "${1:2}" ;; *) printf '%s' "$1" ;; esac; }
 trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"; printf '%s' "$s"; }
 # owned_safely PATH [above]: true when PATH belongs to root or to the account running this script
@@ -489,7 +498,7 @@ show_help() {
   ui_param "Author"   "The copyright holder named in the LICENSE file."
   ui_param "Licence"  "$SCRIPT_LICENCE"
   ui_param "Derived"  "Deploy-PowerShell7.ps1, the same author's Windows start-up script for PowerShell 7."
-  ui_param "History"  "1.0.0 first port; 2.0.0 rebuilt on the author's script template; 2.0.1 licence; 2.1.0 joined this repository (fixes listed in the script's header)."
+  ui_param "History"  "1.0.0 first port; 2.0.0 rebuilt on the author's script template; 2.0.1 licence; 2.1.0 joined this repository (fixes listed in the script's header); 2.1.1 shellcheck clean, no change to what it does."
   ui_section "DOCUMENTATION"
   ui_text "github.com/PowerShell/PowerShell/releases (the packages and the hashes.sha256 of each release); aka.ms/powershell-release?tag=stable and ?tag=lts; Microsoft Learn, Installing PowerShell on macOS; in this repository, README.md and docs/Getting-Started.md."
   emit "" "" force
@@ -512,7 +521,7 @@ parse_args() {
       --quiet|-Quiet)                     QUIET=1;               SUPPLIED="$SUPPLIED --quiet" ;;
       --verbose|-Verbose)                 VERBOSE=1;             SUPPLIED="$SUPPLIED --verbose" ;;
       --save-config|-SaveConfig)          SAVE_CONFIG=1;         SUPPLIED="$SUPPLIED --save-config" ;;
-      --allow-plaintext-secrets)          ALLOW_PLAINTEXT=1;     SUPPLIED="$SUPPLIED --allow-plaintext-secrets" ;;
+      --allow-plaintext-secrets)                                 SUPPLIED="$SUPPLIED --allow-plaintext-secrets" ;;
       --pin|-PinVersion)        need_val "$@" && { SETTING_PIN="$2";   SUPPLIED="$SUPPLIED --pin"; shift; } ;;
       --cache-dir|-CacheDir)    need_val "$@" && { SETTING_CACHE="$2"; SUPPLIED="$SUPPLIED --cache-dir"; shift; } ;;
       --config|-ConfigFile)     need_val "$@" && { CONFIG_FILE="$2";   SUPPLIED="$SUPPLIED --config"; shift; } ;;
