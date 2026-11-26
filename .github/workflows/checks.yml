@@ -1,0 +1,39 @@
+# Runs the offline checks (tools/check_scripts.sh) on every push and pull request,
+# on Linux and macOS. They contact no connector, domain controller or share, need no
+# password, and run no Prerequisites script for real.
+name: Checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Offline checks (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS also runs the macOS installer's suite, which is skipped elsewhere
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tool versions
+        run: |
+          pwsh -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+          python3 --version
+          bash --version | head -1
+          command -v shellcheck || echo "shellcheck not installed"
+      - name: Offline checks
+        env:
+          NO_COLOR: "1"
+        run: sh tools/check_scripts.sh
