@@ -62,3 +62,6 @@ __pycache__/
 # OS noise
 .DS_Store
 Thumbs.db
+
+# Local agent-coordination state (thrum)
+.thrum/
